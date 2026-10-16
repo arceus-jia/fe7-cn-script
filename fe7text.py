@@ -1,6 +1,8 @@
 """火焰纹章 烈火之剑（AE7J 汉化版）文本解码。地址来自本 ROM 反汇编，换版本需重新确认。"""
 import os
+import re
 import struct
+import unicodedata
 
 TEXT_COUNT = 4661
 FONT_BASE = 0xBC0698  # 字模 = BASE + ((hi-0x81)*128 + (lo-0x80)) * 0x54，见 0x08005614
@@ -218,6 +220,86 @@ def fmt(lines):
     return '\n'.join(f'{sp}：{s}' if sp else s for sp, s in lines)
 
 
+# 堇天《狼组•火花汉化版错译盘点》：https://www.bilibili.com/read/readlist/rl724370
+JINTIAN_URL = 'https://www.bilibili.com/read/readlist/rl724370'
+JINTIAN_LABEL = '堇天修正 v0.9'  # 堇天定的版本号，出新版时改这里
+# 修正版统一使用的堇天译名：火花译名 -> 堇天译名。只收她在修正文里一贯使用、或文中明确说明改过的；
+# 混用的（霍凯/霍克艾、多尔克斯/多尔卡斯、罗依德/罗伊德、艾特鲁斯坎/艾特鲁利亚）不做全局替换，各句照她原文
+JINTIAN_NAMES = {'赫克托耳': '海克托尔', '露依斯': '露易丝', '雷钠多': '雷纳多', '艾利克': '埃利克',
+                 '埃伦': '埃伦诺亚', '巴萨鲁': '哈萨鲁', '海亚德': '贝亚德'}
+# 堇天文中的写法 -> 火花写法（定位原文用）；「玛克」是她游戏里的军师名
+JINTIAN_ALIASES = {**{v: k for k, v in JINTIAN_NAMES.items()}, '玛克': '{军师名}'}
+# 专栏修正文里的笔误（生成网页时更正）
+JINTIAN_TYPOS = {'奥迪斯亚': '奥斯迪亚'}
+
+
+def norm_chars(s):
+    """逐字归一化：去掉标点、空白和 {占位符} -> [(字, 在原文中的下标)]。"""
+    out, i = [], 0
+    while i < len(s):
+        if s[i] == '{' and '}' in s[i:]:
+            i = s.index('}', i) + 1
+            continue
+        out += [(c, i) for c in unicodedata.normalize('NFKC', s[i]) if c.isalnum()]
+        i += 1
+    return out
+
+
+def norm(s):
+    return ''.join(c for c, _ in norm_chars(s))
+
+
+def apply_fixes(lines, fixes):
+    """把纠错替换进剧本行 -> (新的剧本行, 改动组 [[起始行, 结束行(不含), 对应的原文行]])。
+    fixes: [(原文锚点, [(说话人, 修正文)])]。"""
+    lines, groups = list(lines), []
+    for anchor, fix in fixes:
+        if anchor.startswith('='):  # 只改标点的条目：按整行原文精确定位，「=说话人：台词」，多行用换行分隔
+            want = anchor[1:].split('\n')
+            fmt_line = lambda ln: f'{ln[0]}：{ln[1]}' if ln[0] else ln[1]
+            l0 = next((i for i in range(len(lines) - len(want) + 1)
+                       if [fmt_line(ln) for ln in lines[i:i + len(want)]] == want), None)
+            if l0 is None:
+                continue
+            l1, c0, c1 = l0 + len(want) - 1, 0, len(lines[l0 + len(want) - 1][1])
+            s0, s1 = lines[l0][1], lines[l1][1]
+        else:
+            flat = [(c, li, ci) for li, (_, s) in enumerate(lines) for c, ci in norm_chars(s)]
+            k = ''.join(c for c, _, _ in flat).find(anchor)
+            if k < 0 or not anchor:
+                continue
+            (_, l0, c0), (_, l1, c1) = flat[k], flat[k + len(anchor) - 1]
+            s0, s1, c1 = lines[l0][1], lines[l1][1], c1 + 1
+        if not fix[-1][1][-1:].isalnum():  # 修正文自带结尾标点时，去掉原文紧跟的标点
+            while c1 < len(s1) and not s1[c1].isalnum() and s1[c1] != '{':
+                c1 += 1
+        if not fix[0][1][:1].isalnum():
+            while c0 > 0 and not s0[c0 - 1].isalnum() and s0[c0 - 1] != '}':
+                c0 -= 1
+        speakers = {lines[i][0] for i in range(l0, l1 + 1)}
+        new, prev = [], lines[l0][0]
+        for sp, t in fix:  # 说话人用本站写法；对不上原文范围内的说话人时沿用上一行
+            sp = JINTIAN_ALIASES.get(sp, sp) if sp else prev
+            prev = sp if sp in speakers else prev
+            new.append((prev, t))
+        new[0] = (new[0][0], s0[:c0] + new[0][1])
+        new[-1] = (new[-1][0], new[-1][1] + s1[c1:])
+        # 原文：被覆盖的行里，已经改过的取当初的原文（同一行被多条纠错修改时合并成一组）
+        hit = [g for g in groups if g[0] <= l1 and l0 < g[1]]
+        lo, hi = min([l0] + [g[0] for g in hit]), max([l1 + 1] + [g[1] for g in hit])
+        old, i = [], lo
+        while i < hi:
+            g = next((g for g in hit if g[0] == i), None)
+            old += g[2] if g else [lines[i]]
+            i = g[1] if g else i + 1
+        new = lines[lo:l0] + new + lines[l1 + 1:hi]
+        lines[lo:hi] = new
+        shift = len(new) - (hi - lo)
+        groups = [g if g[0] < lo else [g[0] + shift, g[1] + shift, g[2]] for g in groups if g not in hit]
+        groups.append([lo, lo + len(new), old])
+    return lines, sorted(groups)
+
+
 def chapter_events(rom, k):
     """第 k 章剧情脚本里按顺序出现的文本：[(指令, [文本ID...])]。"""
     hdr = lambda c: rom.u32(rom.u32(POINTER_TABLE + 4 * rom.d[CHAPTER_DATA + c * 0x94]) - 0x08000000 + 0x38) - 0x08000000
@@ -375,8 +457,8 @@ def write_txt(page, path):
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n\n'.join(body) + '\n')
 
-SITE_CSS = """:root{--bg:#fbfaf7;--fg:#1f1f1f;--muted:#6f6c66;--line:#e4e1da;--accent:#9b2c2c;--card:#fff;--l:36%}
-@media (prefers-color-scheme:dark){:root{--bg:#17171a;--fg:#e6e4df;--muted:#9a978f;--line:#2e2d33;--accent:#e8917f;--card:#202026;--l:72%}}
+SITE_CSS = """:root{--bg:#fbfaf7;--fg:#1f1f1f;--muted:#6f6c66;--line:#e4e1da;--accent:#9b2c2c;--card:#fff;--mark:#fbefc4;--l:36%}
+@media (prefers-color-scheme:dark){:root{--bg:#17171a;--fg:#e6e4df;--muted:#9a978f;--line:#2e2d33;--accent:#e8917f;--card:#202026;--mark:#3d3520;--l:72%}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;overflow-wrap:anywhere}
 main,nav{max-width:42em;margin:0 auto;padding:0 16px}
@@ -408,38 +490,78 @@ b{font-weight:600;color:hsl(var(--h) 55% var(--l))}
 h2 .up{float:right;font-size:13px;font-weight:normal}
 table{border-collapse:collapse;width:100%;font-size:15px}
 th,td{border-bottom:1px solid var(--line);padding:.35em .5em;text-align:left;vertical-align:top}
+body{padding-bottom:64px}
+.cmp>summary{list-style:none;cursor:pointer}.cmp>summary::-webkit-details-marker{display:none}
+.cmp>summary>span{display:block;background:var(--mark);border-radius:4px;padding:0 .3em;margin:0 -.3em}
+.mk{font-style:normal;font-size:11px;color:var(--muted);border:1px solid var(--muted);border-radius:999px;padding:0 .5em;margin-left:.4em;white-space:nowrap;vertical-align:1px}
+.cmp[open] .mk{background:var(--muted);color:var(--card)}
+.old{border-left:3px solid var(--mark);margin:.25em 0 .6em;padding:.1em 0 .1em .7em;color:var(--muted)}
+.old::before{content:"火花原文";display:block;font-size:12px}
+.src{margin-left:.5em}
+.ver{position:fixed;right:12px;bottom:12px;display:flex;border:1px solid var(--line);border-radius:999px;background:var(--card);box-shadow:0 2px 10px rgba(0,0,0,.15);overflow:hidden;font-size:14px;z-index:9}
+.ver a{color:var(--muted);padding:.5em 1em}
+html:not(.jt) .ver [data-v=hh],html.jt .ver [data-v=jt]{background:var(--accent);color:var(--card)}
 """
 SITE_SLUGS = {'支援对话': 'support', '阵亡与撤退台词': 'death', '结局与后日谈': 'epilogue',
               '其他文本（系统、说明、菜单等）': 'misc'}
 
 
-def write_site(pages, glossary, site):
-    """GitHub Pages 用的静态网页：index.html + 每章一页 + 名词表，无需构建。"""
+def renamer(names):
+    """火花译名 -> 堇天译名的整体替换函数（长名优先）。"""
+    if not names:
+        return lambda s: s
+    pat = re.compile('|'.join(map(re.escape, sorted(names, key=len, reverse=True))))
+    abbr = names.get('赫克托耳', '赫')[:1]  # 章号缩写「赫16章」跟着改
+    return lambda s: re.sub(r'赫(?=\d)', abbr, pat.sub(lambda m: names[m.group(0)], s)) if s else s
+
+
+def write_site(pages, glossary, site, jt=None):
+    """生成一套网页。jt=None 为火花原版（site 根目录）；jt={'fixes', 'names'} 为堇天修正版（site/jt/）：
+    fixes: {文本ID: [(原文锚点, 修正行, (专栏cv号, 条目号))]}，names: {火花译名: 堇天译名}。"""
     import html, zlib
     esc = html.escape
-    os.makedirs(site, exist_ok=True)
-    open(os.path.join(site, '.nojekyll'), 'w').close()
-    with open(os.path.join(site, 'style.css'), 'w', encoding='utf-8') as f:
-        f.write(SITE_CSS)
+    fixes, T = (jt['fixes'], renamer(jt['names'])) if jt else ({}, lambda s: s)
+    applied = set()  # 网页上实际生效的纠错（专栏cv号, 条目号）
+    root, out_dir = ('../', os.path.join(site, 'jt')) if jt else ('', site)
+    os.makedirs(out_dir, exist_ok=True)
+    if not jt:
+        open(os.path.join(site, '.nojekyll'), 'w').close()
+        with open(os.path.join(site, 'style.css'), 'w', encoding='utf-8') as f:
+            f.write(SITE_CSS)
     slug = lambda p: p.get('slug') or ('c' + p['name'][:2] if p['name'][:2].isdigit() else SITE_SLUGS[p['name']])
 
-    def doc(title, nav, body):
-        return (f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+    def doc(title, nav, body, file):
+        hh, jt_link = (f'../{file}', file) if jt else (file, f'jt/{file}')
+        switch = (f'<div class="ver"><a data-v="hh" href="{hh}">火花原版</a><a data-v="jt" href="{jt_link}">{JINTIAN_LABEL}</a></div>'
+                  '<script>document.querySelectorAll(".ver a").forEach(function(a){a.onclick=function(){'
+                  'location.href=a.getAttribute("href")+location.hash;return false}})</script>')
+        return (f'<!doctype html><html lang="zh-CN"{" class=\"jt\"" if jt else ""}><head><meta charset="utf-8">'
                 f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-                f'<title>{esc(title)}</title><link rel="stylesheet" href="style.css"></head>'
-                f'<body>{nav}<main>{body}</main>{nav}</body></html>\n')
+                f'<title>{esc(T(title))}{f"（{JINTIAN_LABEL}）" if jt else ""}</title><link rel="stylesheet" href="{root}style.css"></head>'
+                f'<body>{nav}<main>{body}</main>{nav}{switch}</body></html>\n')
 
-    def line(sp, s):
-        if not sp:
-            return f'<p>{esc(s)}</p>'
-        return f'<p>{who(sp)}：{esc(s)}</p>'
+    def line(sp, s, tag='p', raw=False):  # raw：对照用的火花原文，不换译名
+        t = (lambda x: x) if raw else T
+        return f'<{tag}>{who(sp, raw)}：{esc(t(s))}</{tag}>' if sp else f'<{tag}>{esc(t(s))}</{tag}>'
 
-    def who(name):  # 每个角色固定一个颜色
-        return f'<b style="--h:{zlib.crc32(name.encode()) % 360}">{esc(name)}</b>'
+    def who(name, raw=False):  # 每个角色固定一个颜色（按火花名算，两版一致）
+        return f'<b style="--h:{zlib.crc32(name.encode()) % 360}">{esc(name if raw else T(name))}</b>'
+
+    def render(lines, groups):
+        """改动组显示修正文（黄底），句尾「原文」点开可对照火花原文。"""
+        out, k = [], 0
+        for start, end, old in groups:
+            out += [line(sp, s) for sp, s in lines[k:start]]
+            new = [line(sp, s, 'span') for sp, s in lines[start:end]]
+            new[-1] = new[-1][:-len('</span>')] + '<i class="mk">原文</i></span>'
+            out.append('<details class="cmp"><summary>' + ''.join(new) + '</summary><div class="old">'
+                       + ''.join(line(sp, s, raw=True) for sp, s in old) + '</div></details>')
+            k = end
+        return ''.join(out + [line(sp, s) for sp, s in lines[k:]])
 
     def jump(index):
         rows = ''.join(f'<p>{who(g) if len(index) > 1 else ""}'
-                       + ''.join(f'<a href="#s{j}">{esc(t)}</a>' for t, j in links) + '</p>' for g, links in index)
+                       + ''.join(f'<a href="#s{j}">{esc(T(t))}</a>' for t, j in links) + '</p>' for g, links in index)
         return f'<details id="idx" class="jump" open><summary>索引</summary>{rows}</details>'
 
     def hub(chars):  # 角色胶囊：点开显示支援对象（同一时间只展开一个），点对象跳到对话
@@ -453,25 +575,35 @@ def write_site(pages, glossary, site):
 
     def write_pages(ps, home, home_title, prev_text, next_text):
         for i, p in enumerate(ps):
-            prev = f'<a href="{slug(ps[i - 1])}.html" title="{esc(ps[i - 1]["title"])}">← {prev_text}</a>' if i else '<span></span>'
-            nxt = f'<a href="{slug(ps[i + 1])}.html" title="{esc(ps[i + 1]["title"])}">{next_text} →</a>' if i + 1 < len(ps) else '<span></span>'
+            prev = f'<a href="{slug(ps[i - 1])}.html" title="{esc(T(ps[i - 1]["title"]))}">← {prev_text}</a>' if i else '<span></span>'
+            nxt = f'<a href="{slug(ps[i + 1])}.html" title="{esc(T(ps[i + 1]["title"]))}">{next_text} →</a>' if i + 1 < len(ps) else '<span></span>'
             nav = f'<nav>{prev}<a href="{home}">{home_title}</a>{nxt}</nav>'
-            body = [f'<h1>{esc(p["title"])}</h1>']
+            body = [f'<h1>{esc(T(p["title"]))}</h1>']
             if p.get('hub'):
                 body.append(hub(p['hub']))
                 write_pages(p['subpages'], slug(p) + '.html', '支援目录', '上一位', '下一位')
             if p.get('index'):
                 body.append(jump(p['index']))
+            n_fix = 0
             for j, (head, items) in enumerate(p['sections']):
                 if head:
                     up = '<a class="up" href="#idx">↑ 索引</a>' if p.get('index') else ''
-                    body.append(f'<h2 id="s{j}">{esc(head)}{up}</h2>')
+                    body.append(f'<h2 id="s{j}">{esc(T(head))}{up}</h2>')
                 for t, tag, lines in items:
-                    tag_html = f'<span class="tag">{esc(tag)}</span>' if tag else ''
+                    tag_html = f'<span class="tag">{esc(T(tag))}</span>' if tag else ''
+                    lines, groups = apply_fixes(lines, [(a, f) for a, f, _ in fixes.get(t, [])])
+                    if groups:
+                        n_fix += 1
+                        applied.update(src for *_, src in fixes[t])
+                        links = ''.join(f'<a href="https://www.bilibili.com/read/cv{cv}/" target="_blank">#{no}</a> '
+                                        for _, _, (cv, no) in fixes[t])
+                        tag_html += f'<span class="src">堇天纠错 {links}</span>'
                     body.append(f'<article id="t{t:04X}"><header><a href="#t{t:04X}">#{t:04X}</a>{tag_html}</header>'
-                                + ''.join(line(sp, s) for sp, s in lines) + '</article>')
-            with open(os.path.join(site, slug(p) + '.html'), 'w', encoding='utf-8') as f:
-                f.write(doc(p['title'], nav, ''.join(body)))
+                                + render(lines, groups) + '</article>')
+            if n_fix:
+                body.insert(1, f'<p class="note">本页有 {n_fix} 段文本采用了堇天的修正（黄色底色），点句尾「原文」可对照火花原文。</p>')
+            with open(os.path.join(out_dir, slug(p) + '.html'), 'w', encoding='utf-8') as f:
+                f.write(doc(p['title'], nav, ''.join(body), slug(p) + '.html'))
 
     write_pages(pages, 'index.html', '目录', '上一页', '下一页')
 
@@ -479,33 +611,41 @@ def write_site(pages, glossary, site):
     body = ['<h1>名词表</h1>', jump([('', [(k, j) for j, k in enumerate(kinds)])])]
     for j, kind in enumerate(kinds):
         uniq = dict.fromkeys((r[2], r[3]) for r in glossary[1:] if r[0] == kind)  # 同名同说明的重复条目只留一条
-        rows = ''.join(f'<tr><td>{esc(n)}</td><td>{esc(desc)}</td></tr>' for n, desc in uniq)
+        rows = ''.join(f'<tr><td>{esc(T(n))}</td><td>{esc(T(desc))}</td></tr>' for n, desc in uniq)
         body.append(f'<h2 id="s{j}">{esc(kind)}<a class="up" href="#idx">↑ 索引</a></h2>'
                     f'<table><tr><th>名称</th><th>说明</th></tr>{rows}</table>')
     nav = '<nav><span></span><a href="index.html">目录</a><span></span></nav>'
-    with open(os.path.join(site, 'names.html'), 'w', encoding='utf-8') as f:
-        f.write(doc('名词表', nav, ''.join(body)))
+    with open(os.path.join(out_dir, 'names.html'), 'w', encoding='utf-8') as f:
+        f.write(doc('名词表', nav, ''.join(body), 'names.html'))
 
     def toc(ps):
         items = []
         for p in ps:
             label, _, title = p['title'].partition('　')
-            items.append(f'<li><a href="{slug(p)}.html"><small>{esc(label)}</small>{esc(title)}</a></li>')
+            items.append(f'<li><a href="{slug(p)}.html"><small>{esc(T(label))}</small>{esc(T(title))}</a></li>')
         return '<ul class="toc">' + ''.join(items) + '</ul>'
     chapters = [p for p in pages if p['name'][:2].isdigit()]
-    body = ('<h1>火焰纹章 烈火之剑 汉化版文本</h1>'
-            '<p class="note">文本出自火花 × 狼组汉化版，仅供查阅参考，版权归原作及汉化组所有。<br>'
-            '章号中「艾」指艾利乌德篇、「赫」指赫克托耳篇。每段开头的 #编号 是游戏内文本编号。</p>'
+    jt_link = f'<a href="{JINTIAN_URL}" target="_blank">堇天《狼组•火花汉化版错译盘点》</a>'
+    if jt:
+        n = len(applied)
+        intro = (f'<h1>火焰纹章 烈火之剑 汉化版文本（{JINTIAN_LABEL}）</h1><p class="note">在火花 × 狼组汉化版的基础上，'
+                 f'采用 {jt_link} 的 {n} 条修正替换错译（修改处以黄色底色标出，并附原文章链接），人名统一使用堇天的译名。'
+                 '右下角可切回火花原版。<br>')
+    else:
+        intro = ('<h1>火焰纹章 烈火之剑 汉化版文本</h1><p class="note">文本出自火花 × 狼组汉化版，仅供查阅参考，版权归原作及汉化组所有。<br>'
+                 f'右下角可切换到「{JINTIAN_LABEL}」：采用 {jt_link} 的修正译文替换原版中的错译。<br>')
+    body = (intro + T('章号中「艾」指艾利乌德篇、「赫」指赫克托耳篇。').replace('「赫」', f'「{T("赫1")[0]}」')
+            + '每段开头的 #编号 是游戏内文本编号。</p>'
             '<h2>琳篇</h2>' + toc(chapters[:12]) + '<h2>艾利乌德篇・赫克托耳篇</h2>' + toc(chapters[12:])
             + '<h2>其他</h2><ul class="toc">'
-            + ''.join(f'<li><a href="{slug(p)}.html">{esc(p["title"])}</a></li>' for p in pages if not p['name'][:2].isdigit())
+            + ''.join(f'<li><a href="{slug(p)}.html">{esc(T(p["title"]))}</a></li>' for p in pages if not p['name'][:2].isdigit())
             + '<li><a href="names.html">名词表（人物・职业・道具）</a></li></ul>')
-    with open(os.path.join(site, 'index.html'), 'w', encoding='utf-8') as f:
-        f.write(doc('烈火之剑 汉化版文本', '', body))
+    with open(os.path.join(out_dir, 'index.html'), 'w', encoding='utf-8') as f:
+        f.write(doc('烈火之剑 汉化版文本', '', body, 'index.html'))
 
 
 if __name__ == '__main__':
-    import csv, glob, sys
+    import csv, glob, json, sys
     here = os.path.dirname(os.path.abspath(__file__))
     rom = Rom(sys.argv[1] if len(sys.argv) > 1 else glob.glob(os.path.join(here, 'rom', '*.gba'))[0])
     tbl = load_tbl(os.path.join(here, 'fe7_cn.tbl'))
@@ -534,7 +674,14 @@ if __name__ == '__main__':
             continue
         sub = '章节' if p['name'][:2].isdigit() else ''
         write_txt(p, os.path.join(out, sub, p['name'] + '.txt'))
+    fixes = {}  # 堇天纠错（jintian.py 生成）：{文本ID: [(原文锚点, 修正行, (cv号, 条目号))]}
+    jt_path = os.path.join(here, 'jintian.json')
+    for r in (json.load(open(jt_path, encoding='utf-8')) if os.path.exists(jt_path) else []):
+        fix = [(sp, renamer({**JINTIAN_TYPOS, '玛克': '{军师名}'})(t)) for sp, t in r['fix']]
+        for i in r.get('ids', []):
+            fixes.setdefault(int(i, 16), []).append((r['anchor'], fix, (r['cv'], r['no'])))
     write_site(pages, glossary, os.path.join(here, 'docs'))  # GitHub Pages：main 分支 /docs
+    write_site(pages, glossary, os.path.join(here, 'docs'), jt={'fixes': fixes, 'names': JINTIAN_NAMES})
 
     # 自检：几处人工核对过的原文
     assert '纵横捭阖' in text(rom, tbl, 0x6CD).replace('\n', '')

@@ -1,5 +1,5 @@
-:root{--bg:#fbfaf7;--fg:#1f1f1f;--muted:#6f6c66;--line:#e4e1da;--accent:#9b2c2c;--card:#fff;--l:36%}
-@media (prefers-color-scheme:dark){:root{--bg:#17171a;--fg:#e6e4df;--muted:#9a978f;--line:#2e2d33;--accent:#e8917f;--card:#202026;--l:72%}}
+:root{--bg:#fbfaf7;--fg:#1f1f1f;--muted:#6f6c66;--line:#e4e1da;--accent:#9b2c2c;--card:#fff;--mark:#fbefc4;--l:36%}
+@media (prefers-color-scheme:dark){:root{--bg:#17171a;--fg:#e6e4df;--muted:#9a978f;--line:#2e2d33;--accent:#e8917f;--card:#202026;--mark:#3d3520;--l:72%}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;overflow-wrap:anywhere}
 main,nav{max-width:42em;margin:0 auto;padding:0 16px}
@@ -31,3 +31,14 @@ b{font-weight:600;color:hsl(var(--h) 55% var(--l))}
 h2 .up{float:right;font-size:13px;font-weight:normal}
 table{border-collapse:collapse;width:100%;font-size:15px}
 th,td{border-bottom:1px solid var(--line);padding:.35em .5em;text-align:left;vertical-align:top}
+body{padding-bottom:64px}
+.cmp>summary{list-style:none;cursor:pointer}.cmp>summary::-webkit-details-marker{display:none}
+.cmp>summary>span{display:block;background:var(--mark);border-radius:4px;padding:0 .3em;margin:0 -.3em}
+.mk{font-style:normal;font-size:11px;color:var(--muted);border:1px solid var(--muted);border-radius:999px;padding:0 .5em;margin-left:.4em;white-space:nowrap;vertical-align:1px}
+.cmp[open] .mk{background:var(--muted);color:var(--card)}
+.old{border-left:3px solid var(--mark);margin:.25em 0 .6em;padding:.1em 0 .1em .7em;color:var(--muted)}
+.old::before{content:"火花原文";display:block;font-size:12px}
+.src{margin-left:.5em}
+.ver{position:fixed;right:12px;bottom:12px;display:flex;border:1px solid var(--line);border-radius:999px;background:var(--card);box-shadow:0 2px 10px rgba(0,0,0,.15);overflow:hidden;font-size:14px;z-index:9}
+.ver a{color:var(--muted);padding:.5em 1em}
+html:not(.jt) .ver [data-v=hh],html.jt .ver [data-v=jt]{background:var(--accent);color:var(--card)}
