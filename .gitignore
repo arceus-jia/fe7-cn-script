@@ -1,0 +1,9 @@
+# ROM 不入库（版权，且体积 16MB）
+rom/
+*.gba
+
+# 本地生成的 txt 文本（网页版在 docs/，会入库）
+output/
+
+__pycache__/
+.DS_Store
