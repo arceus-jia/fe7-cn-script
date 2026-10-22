@@ -99,6 +99,7 @@ def script(rom, tbl, i, faces, state=None):
     state = {'slots': {}, 'cur': None} if state is None else state
     lines, buf, slots, cur = [], [], state['slots'], state['cur']
     speaker = slots.get(cur)
+    fresh = set()  # 本段文本里加载过头像的位置
     pending_name = None  # 0x80 0x23 后第一行是名字标签
 
     def flush():
@@ -115,14 +116,17 @@ def script(rom, tbl, i, faces, state=None):
         c = b[0]
         if c == 0x01:
             if pending_name is not None:
-                flush(); speaker = ''.join(pending_name); pending_name = None
+                flush(); speaker = ''.join(pending_name).rstrip('：:'); pending_name = None
         elif c in (0x02, 0x03):
             flush()
         elif 0x08 <= c <= 0x0F:
             flush(); cur = c; speaker = slots.get(c)
         elif c == 0x10:
             flush(); face = b[1] + (b[2] << 8) - 0x100
-            slots[cur] = faces.get(face, '头像%02X' % face); speaker = slots[cur]
+            name = faces.get(face, '头像%02X' % face)
+            for k in [k for k, v in slots.items() if v == name and name and k not in fresh]:
+                del slots[k]  # 角色在本段换了位置：从上一段继承来的旧位置作废
+            slots[cur] = name; speaker = name; fresh.add(cur)
         elif c == 0x11:
             flush(); slots.pop(cur, None); speaker = None
         elif c == 0x80:
@@ -130,15 +134,22 @@ def script(rom, tbl, i, faces, state=None):
                 buf.append(INLINE[b[1]])
             elif b[1] == 0x23:
                 flush(); pending_name = []
-            elif b[1] in MOVE_TO and cur in slots:
-                flush(); slots[MOVE_TO[b[1]]] = slots.pop(cur); cur = MOVE_TO[b[1]]
+            elif b[1] in MOVE_TO:  # 移到有人的位置时两人互换（如波鲁和加斯敏轮流站到前排）
+                flush(); to = MOVE_TO[b[1]]
+                moving = slots.pop(cur, None)
+                if moving is not None:  # 原位置已空（重复的移动指令）时不互换，只切换当前位置
+                    other = slots.pop(to, None)
+                    slots[to] = moving
+                    if other is not None:
+                        slots[cur] = other
+                cur, speaker = to, slots.get(to)
     flush()
     state['cur'] = cur
     return lines
 
 
 DEBUG_FACE_TEXTS = range(0x11A6, 0x11AE)  # 开发用头像查看器：「[09]头像A [0C]头像B / 名A、名B」
-FACE_SUFFIXES = ('正面', '礼服', '5年后', '怒', '忍', '眠', '操', '悲', '左', '2', 'F')
+FACE_SUFFIXES = ('正面', '礼服', '5年后', '怒', '忍', '眠', '操', '悲', '忧', '左', '2', 'F')
 
 
 def face_names(rom, tbl):
@@ -167,8 +178,8 @@ def face_names(rom, tbl):
             elif b[0] == 0x11:
                 slots.pop(cur, None)
     faces[0xFEFF] = '（当前角色）'  # [LoadFace 0xFFFF]：触发事件的单位
-    for f in (0xDF, 0xE0, 0xE4):    # 系统提示框，不标说话人
-        faces[f] = None
+    faces[0xDF] = '安娜'  # 秘密商店、教学提示、第17章外传村庄都用这个头像
+    faces[0xE0] = '肖克'  # 第18章，自称「我是肖克」
     return faces
 
 
@@ -193,8 +204,13 @@ ANY_CHAPTER = 0x45
 TEXT_OPS = {0x0D: (0, 1, False), 0x11: (0, 1, True), 0xD2: (0, 1, True), 0xD4: (0, 1, True),
             0x0F: (0, 2, False), 0x12: (0, 2, True),   # 两条分别是艾利乌德篇 / 赫克托耳篇
             0x17: (0, 2, False), 0x18: (0, 2, True),   # 两条分别是男军师 / 女军师（只差称呼，取男军师版）
-            0x19: (1, 2, False)}                       # [条件, A, B]：两版只差头像站位，取 A
+            0x19: (1, 2, False),                       # [条件, A, B]：两版只差头像站位，取 A
+            0x1A: (1, 2, False), 0x1B: (1, 2, False)}  # [判断函数, A, B]：条件满足（军师在场/某角色在队）时 A，否则 B
 MODE_OPS = (0x0F, 0x12)
+ALT_OPS = (0x1A, 0x1B)
+# 事件流程控制：0x42 标签、0x43 无条件跳转、0x44–0x4E 条件判断（第一个参数都是目标标签）。
+# 分支剧情里，跳到标签处的文本要沿用跳转前的头像，而不是上一条（另一分支）文本的
+LABEL_OP, GOTO_OP, IF_OPS = 0x42, 0x43, range(0x44, 0x4F)
 # 章节序号分组（同章不同路线合并）与显示章号；章节名取自 ROM
 CHAPTERS = [
     ([0], '序章'), ([1], '第1章'), ([2], '第2章'), ([3], '第3章'), ([4], '第4章'), ([5], '第5章'),
@@ -251,9 +267,9 @@ def norm(s):
 
 def apply_fixes(lines, fixes):
     """把纠错替换进剧本行 -> (新的剧本行, 改动组 [[起始行, 结束行(不含), 对应的原文行]])。
-    fixes: [(原文锚点, [(说话人, 修正文)])]。"""
+    fixes: [(原文锚点, [(说话人, 修正文)], 说话人或None)]；锚点出现多次时，替换说话人对得上的那一处。"""
     lines, groups = list(lines), []
-    for anchor, fix in fixes:
+    for anchor, fix, *who in fixes:
         if anchor.startswith('='):  # 只改标点的条目：按整行原文精确定位，「=说话人：台词」，多行用换行分隔
             want = anchor[1:].split('\n')
             fmt_line = lambda ln: f'{ln[0]}：{ln[1]}' if ln[0] else ln[1]
@@ -265,9 +281,12 @@ def apply_fixes(lines, fixes):
             s0, s1 = lines[l0][1], lines[l1][1]
         else:
             flat = [(c, li, ci) for li, (_, s) in enumerate(lines) for c, ci in norm_chars(s)]
-            k = ''.join(c for c, _, _ in flat).find(anchor)
-            if k < 0 or not anchor:
+            joined, hits, k = ''.join(c for c, _, _ in flat), [], -1
+            while anchor and (k := joined.find(anchor, k + 1)) >= 0:
+                hits.append(k)
+            if not hits:
                 continue
+            k = next((h for h in hits if who and who[0] and lines[flat[h][1]][0] == who[0]), hits[0])
             (_, l0, c0), (_, l1, c1) = flat[k], flat[k + len(anchor) - 1]
             s0, s1, c1 = lines[l0][1], lines[l1][1], c1 + 1
         if not fix[-1][1][-1:].isalnum():  # 修正文自带结尾标点时，去掉原文紧跟的标点
@@ -300,8 +319,24 @@ def apply_fixes(lines, fixes):
     return lines, sorted(groups)
 
 
+def reuses_faces(raw):
+    """文本在加载某个位置的头像之前就用到了它（说话/清除/移动）：说明接着上一段的场面。"""
+    loaded, cur = set(), None
+    for kind, b in tokens(raw):
+        if kind == 'char':
+            if cur is not None and cur not in loaded:
+                return True
+        elif 0x08 <= b[0] <= 0x0F:
+            cur = b[0]
+        elif b[0] == 0x10:
+            loaded.add(cur)
+        elif (b[0] == 0x11 or (b[0] == 0x80 and b[1] in MOVE_TO)) and cur is not None and cur not in loaded:
+            return True
+    return False
+
+
 def chapter_events(rom, k):
-    """第 k 章剧情脚本里按顺序出现的文本：[(指令, [文本ID...])]。"""
+    """第 k 章剧情脚本里按顺序出现的文本与流程控制：[(指令, [文本ID...] 或 [标签号])]。"""
     hdr = lambda c: rom.u32(rom.u32(POINTER_TABLE + 4 * rom.d[CHAPTER_DATA + c * 0x94]) - 0x08000000 + 0x38) - 0x08000000
     start, end = hdr(k), (hdr(k + 1) if k < 47 else EVENTS_END)
     out = []
@@ -312,6 +347,8 @@ def chapter_events(rom, k):
             ids = [rom.u32(a + 4 * (1 + first + j)) for j in range(n)]
             if all(0x800 <= t < TEXT_COUNT for t in ids):
                 out.append((op, ids))
+        elif (op in (LABEL_OP, GOTO_OP) or op in IF_OPS) and rom.u32(a + 4) < 0x100:
+            out.append((op, [rom.u32(a + 4)]))
     return out
 
 
@@ -388,20 +425,37 @@ def build_pages(rom, tbl, faces):
             sections.append(('世界地图旁白', wm_entries))
 
         story = []
+        copy = lambda st: {k: v and {'slots': dict(v['slots']), 'cur': v['cur']} for k, v in st.items()}
         for k in ks:
-            state = {'A': None, 'B': None}
+            state, saved, dead = {'A': None, 'B': None, 'alt': None}, {}, False
             for op, ids in events[k]:
-                keep = TEXT_OPS[op][2]
+                if op not in TEXT_OPS:  # 流程控制：记下跳转时的头像状态，跳转后进入标签时恢复
+                    if op == LABEL_OP and ids[0] in saved:
+                        if dead:  # 只能从跳转进入
+                            state = copy(saved[ids[0]])
+                        else:  # 分支汇合：顺流路径为准，空着的位置用跳转路径的头像补上
+                            state = {k: saved[ids[0]][k] and state[k] and
+                                     {'slots': {**saved[ids[0]][k]['slots'], **state[k]['slots']}, 'cur': state[k]['cur']}
+                                     or copy(saved[ids[0]])[k] or state[k] for k in state}
+                    else:  # 标签号在不同场景间会重复使用，取最近一次跳转
+                        saved[ids[0]] = copy(state)
+                    dead = op == GOTO_OP
+                    continue
+                dead = False
+                keep = TEXT_OPS[op][2] or reuses_faces(rom.raw(ids[0]))
                 if op in MODE_OPS:
                     tracks = [('A', ids[0], '【艾利乌德篇】'), ('B', ids[1], '【赫克托耳篇】')]
+                elif op in ALT_OPS:  # 另一分支从同一场面开始，显示完回到主线
+                    state['alt'] = copy(state)['A']
+                    tracks = [('A', ids[0], ''), ('alt', ids[1], '【另一分支】')]
                 else:  # 只输出第一版，另一版只记为已处理
                     tracks = [('A', ids[0], '')]
                     done.update(ids[1:])
                 for track, t, tag in tracks:
-                    st = state[track] if keep and state[track] else {'slots': {}, 'cur': None}
+                    st = state.get(track) if keep and state.get(track) else {'slots': {}, 'cur': None}
                     lines = script(rom, tbl, t, faces, st)
                     state[track] = st
-                    if op not in MODE_OPS:
+                    if op not in MODE_OPS and track == 'A':
                         state['B'] = {'slots': dict(st['slots']), 'cur': st['cur']}
                     if t not in done and lines:
                         story.append((t, tag, lines))
@@ -591,12 +645,12 @@ def write_site(pages, glossary, site, jt=None):
                     body.append(f'<h2 id="s{j}">{esc(T(head))}{up}</h2>')
                 for t, tag, lines in items:
                     tag_html = f'<span class="tag">{esc(T(tag))}</span>' if tag else ''
-                    lines, groups = apply_fixes(lines, [(a, f) for a, f, _ in fixes.get(t, [])])
+                    lines, groups = apply_fixes(lines, [(a, f, sp) for a, f, _, sp in fixes.get(t, [])])
                     if groups:
                         n_fix += 1
-                        applied.update(src for *_, src in fixes[t])
+                        applied.update(src for _, _, src, _ in fixes[t])
                         links = ''.join(f'<a href="https://www.bilibili.com/read/cv{cv}/" target="_blank">#{no}</a> '
-                                        for _, _, (cv, no) in fixes[t])
+                                        for _, _, (cv, no), _ in fixes[t])
                         tag_html += f'<span class="src">堇天纠错 {links}</span>'
                     body.append(f'<article id="t{t:04X}"><header><a href="#t{t:04X}">#{t:04X}</a>{tag_html}</header>'
                                 + render(lines, groups) + '</article>')
@@ -679,7 +733,7 @@ if __name__ == '__main__':
     for r in (json.load(open(jt_path, encoding='utf-8')) if os.path.exists(jt_path) else []):
         fix = [(sp, renamer({**JINTIAN_TYPOS, '玛克': '{军师名}'})(t)) for sp, t in r['fix']]
         for i in r.get('ids', []):
-            fixes.setdefault(int(i, 16), []).append((r['anchor'], fix, (r['cv'], r['no'])))
+            fixes.setdefault(int(i, 16), []).append((r['anchor'], fix, (r['cv'], r['no']), r.get('speaker')))
     write_site(pages, glossary, os.path.join(here, 'docs'))  # GitHub Pages：main 分支 /docs
     write_site(pages, glossary, os.path.join(here, 'docs'), jt={'fixes': fixes, 'names': JINTIAN_NAMES})
 
