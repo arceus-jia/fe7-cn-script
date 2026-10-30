@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 用 python3 -I 运行时也能导入同目录模块
 from fe7text import (CHAR_TABLE, CLASS_TABLE, ITEM_TABLE, JINTIAN_NAMES, JINTIAN_TYPOS, TEXT_COUNT, Rom, build_pages,
-                     face_names, fmt, load_tbl, script, table, text, unit_data, write_txt)
+                     face_names, fmt, item_data, load_tbl, script, table, text, unit_data, write_txt)
 from fe7site import export_art, renamer, write_site
 
 
@@ -53,12 +53,13 @@ def main():
         for i in r.get('ids', []):
             fixes.setdefault(int(i, 16), []).append((r['anchor'], fix, (r['cv'], r['no']), r.get('speaker')))
 
-    units = unit_data(rom, tbl)
+    units, items = unit_data(rom, tbl), item_data(rom, tbl)
+    music = json.load(open(os.path.join(here, 'music.json'), encoding='utf-8'))  # 曲目表，音频外链 Serenes Forest
     shutil.rmtree(site, ignore_errors=True)  # docs/ 全部由脚本生成，先清空，免得留下改名前的旧页面
     os.makedirs(site)
     art = export_art(rom, tbl, faces, pages, units[0], site)
-    write_site(pages, glossary, units, site, art=art)  # GitHub Pages：main 分支 /docs
-    write_site(pages, glossary, units, site, jt={'fixes': fixes, 'names': JINTIAN_NAMES}, art=art)
+    write_site(pages, glossary, units, items, music, site, art=art)  # GitHub Pages：main 分支 /docs
+    write_site(pages, glossary, units, items, music, site, jt={'fixes': fixes, 'names': JINTIAN_NAMES}, art=art)
 
     # 自检：几处人工核对过的原文和数据
     assert '纵横捭阖' in text(rom, tbl, 0x6CD).replace('\n', '')
@@ -72,6 +73,9 @@ def main():
     assert list(lyn['growth'].values())[:7] == [70, 40, 60, 60, 55, 20, 30] and lyn['base']['速度'] == 9
     assert next(c for c in chars if c['name'] == '雷万')['lv'] == 5
     assert [classes[8]['cap'][s] for s in ('力量', '技术', '速度')] == [24, 29, 30]  # 利刃领主
+    item = {i['name']: i for i in items}
+    assert item['铁剑']['price'] == 460 and item['银剑']['might'] == 13 and item['突刺剑']['rank'] == '艾利乌德专用'
+    assert item['幽兰戴尔']['bonus'] == '力量+5' and item['铁弓']['effective'][0] == '飞行' and item['治愈之杖']['range'] == '1～魔力/2'
     print('完成：', out, site)
 
 

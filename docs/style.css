@@ -134,10 +134,37 @@ table.stat{width:auto;min-width:100%;font-size:14px;font-variant-numeric:tabular
 .stat th button:focus-visible{outline:2px solid var(--gold)}
 .stat th[aria-sort=descending] button::after{content:"▼";font-size:10px;margin-left:.2em}
 .stat th[aria-sort=ascending] button::after{content:"▲";font-size:10px;margin-left:.2em}
-.stat td.l{text-align:left}
+.stat td.l,.stat th.l{text-align:left}
 .stat td.g{background:rgb(var(--heat) / calc(var(--v) / 220))}
 .stat td small{color:var(--muted);font-size:12px;margin-left:.3em}
 .stat tbody tr:hover td{background-color:var(--mark)}
+
+.stat .w{display:block;white-space:normal;min-width:15em;max-width:26em}  /* 说明文字可以换行 */
+
+/* 全文搜索 */
+form.search{display:flex;gap:8px;margin:1.1em 0 .4em;max-width:36rem}
+form.search input{flex:1;min-width:0;font:inherit;font-size:16px;padding:.4em .9em;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--ink)}
+form.search input:focus{border-color:var(--gold);outline:0}
+form.search button{font:inherit;font-size:15px;padding:.35em 1.2em;border:0;border-radius:999px;background:var(--night);color:#fff;cursor:pointer}
+.results{list-style:none;padding:0;margin:.4em 0}
+.results li{border-bottom:1px dashed var(--line)}
+.results a{display:block;padding:.6em 0;color:var(--ink);line-height:1.75}
+.results a:hover{text-decoration:none;background:var(--card)}
+.results small{display:block;color:var(--brass);font-size:13px}
+mark{background:var(--mark);color:inherit;border-radius:2px}
+
+/* 游戏音乐：顶部固定播放器 + 曲目列表 */
+.player{position:sticky;top:0;z-index:5;background:var(--paper);padding:.7em 0 .5em;border-bottom:1px solid var(--line)}
+.player audio{display:block;width:100%}
+.player p{margin:.3em 0 0;font-size:14px;color:var(--muted)}
+.tracks{list-style:none;padding:0;margin:.4em 0}
+.tracks button{all:unset;box-sizing:border-box;cursor:pointer;display:grid;grid-template-columns:2.6em 1fr;width:100%;padding:.5em .6em;border-bottom:1px dashed var(--line);line-height:1.5}
+.tracks button:hover{background:var(--card)}
+.tracks button:focus-visible{outline:2px solid var(--gold)}
+.tracks button[aria-current]{background:var(--card);box-shadow:inset 3px 0 0 var(--gold)}
+.tracks span{grid-row:span 2;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;padding-top:.2em}
+.tracks b{font-family:var(--serif);font-weight:700}
+.tracks small{color:var(--muted);font-size:13px}
 
 /* 右下角版本切换 */
 .ver{position:fixed;right:12px;bottom:12px;display:flex;border:1px solid var(--gold);border-radius:999px;background:var(--card);box-shadow:0 2px 10px rgba(0,0,0,.2);overflow:hidden;font-size:14px;z-index:9}

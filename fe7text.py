@@ -251,6 +251,42 @@ def unit_data(rom, tbl):
     return chars, [classes[k] for k in sorted(shown)], classes
 
 
+ITEM_TYPES = {0: '剑', 1: '枪', 2: '斧', 3: '弓', 5: '理魔法', 6: '光魔法', 7: '暗魔法', 11: '吐息', 4: '杖', 9: '道具', 12: '道具'}
+RANKS = {1: 'E', 31: 'D', 71: 'C', 121: 'B', 181: 'A', 251: 'S'}  # 武器等级 = 所需熟练度
+ITEM_LOCKS = {0x40000: '艾利乌德', 0x80000: '赫克托耳', 0x100000: '琳', 0x200000: '阿特斯'}  # 专用武器的属性位
+EFFECTIVE = {0xD5FB4E: '重甲', 0xD5FB54: '骑兵、重甲', 0xD5FB65: '剑系步兵', 0xD5FB6F: '骑兵',
+             0xD5FB7D: '龙', 0xD5FB83: '龙、灾祸招致者', 0xD5FB8A: '飞行'}  # 特效对象表（职业编号列表，0 结束）的概括
+BONUS_ORDER = ('HP', '力量', '技术', '速度', '守备', '魔防', '幸运', '移动', '体格')
+
+
+def item_data(rom, tbl):
+    """武器和道具。道具表（0x24 字节）：+0 名称，+2 说明，+7 种类，+8 属性位，+0xC 能力加成表，+0x10 特效对象表，
+    +0x14 耐久，+0x15 威力，+0x16 命中，+0x17 重量，+0x18 必杀，+0x19 射程（高 4 位最小、低 4 位最大，最大 0 = 魔力/2），
+    +0x1A 单次价格，+0x1C 武器等级。"""
+    d, items = rom.d, []
+    for k, nid, a in table(rom, tbl, ITEM_TABLE, 0x24, 6):
+        kind, attr, uses, rk, rng = d[a + 7], rom.u32(a + 8), d[a + 0x14], d[a + 0x1C], d[a + 0x19]
+        if kind not in ITEM_TYPES or kind == 12 and not uses:  # 舞蹈、演奏不是实际道具
+            continue
+        bonus, eff = rom.u32(a + 0xC) - 0x08000000, rom.u32(a + 0x10) - 0x08000000
+        targets = []
+        while eff > 0 and d[eff + len(targets)]:
+            targets.append(text(rom, tbl, rom.u16(CLASS_TABLE + d[eff + len(targets)] * 0x54)))
+        targets = list(dict.fromkeys(targets))
+        lock = next((n for bit, n in ITEM_LOCKS.items() if attr & bit), None)
+        lo, hi = rng >> 4, rng & 15
+        items.append({
+            'id': k, 'name': ''.join(s for _, s in script(rom, tbl, nid, {})), 'type': ITEM_TYPES[kind],
+            'desc': text(rom, tbl, rom.u16(a + 2)).replace('\n', ' '),
+            'rank': RANKS.get(rk) or (f'{lock}专用' if lock else None),
+            'might': d[a + 0x15], 'hit': d[a + 0x16], 'crit': d[a + 0x18], 'weight': d[a + 0x17], 'uses': uses or None,
+            'range': f'{lo}～魔力/2' if not hi else str(lo) if lo == hi else f'{lo}～{hi}',
+            'price': rom.u16(a + 0x1A) * (uses or 1) or None,
+            'effective': (EFFECTIVE.get(eff, '、'.join(targets)), targets) if targets else None,  # (概括, 职业名)
+            'bonus': '　'.join(f'{s}+{v}' for s, v in zip(BONUS_ORDER, d[bonus:bonus + 9]) if v) if bonus > 0 else ''})
+    return items
+
+
 CHAPTER_DATA = 0xD62184   # 第 0 章条目里「事件编号」字节的位置；条目 0x94 字节，-4 处是章节名文本ID
 POINTER_TABLE = 0xD648F4  # 事件头：+0x38 开场剧情；各章剧情脚本按章节顺序连续存放
 EVENTS_END = 0xD88708     # 最后一章剧情脚本的结束位置
