@@ -98,6 +98,8 @@ def script(rom, tbl, i, faces, state=None):
     state: 场景里已显示的头像 {'slots', 'cur'}，传入则沿用并更新（同一场景跨多条文本时）。"""
     state = {'slots': {}, 'cur': None} if state is None else state
     lines, buf, slots, cur = [], [], state['slots'], state['cur']
+    for slot, name in SLOT_FIXES.get(i, {}).items():  # 本段从未加载、只能按同组场景补上的位置
+        slots.setdefault(slot, name)
     speaker = slots.get(cur)
     fresh = set()  # 本段文本里加载过头像的位置
     pending_name = None  # 0x80 0x23 后第一行是名字标签
@@ -150,6 +152,8 @@ def script(rom, tbl, i, faces, state=None):
     return lines
 
 
+# 本段文本没加载、但同组场景（#0936/#0937/#0940）里固定由该角色站的位置：文本ID -> {位置: 说话人}
+SLOT_FIXES = {0x938: {0x0B: '塞拉'}}  # 塞拉受伤的版本，没有加载她的头像
 # 原文站位码与实际站位对不上、推断不出的个别段落，按剧情（对照美版剧本）手动指定：文本ID -> {台词: 说话人}
 SPEAKER_FIXES = {
     0x940: {'！': '塞拉', '你们为什么和山贼们交战？': '琳', '……被逼的。': '埃克', '就是就是。': '塞拉',
