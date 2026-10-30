@@ -1,6 +1,4 @@
 """火焰纹章 烈火之剑（AE7J 汉化版）文本解码。地址来自本 ROM 反汇编，换版本需重新确认。"""
-import os
-import re
 import struct
 import unicodedata
 
@@ -206,6 +204,53 @@ def table(rom, tbl, base, size, num_off):
     return rows
 
 
+STATS = ('HP', '力量', '技术', '速度', '幸运', '守备', '魔防', '体格', '移动')
+PLAYABLE = [*range(0x01, 0x0A), 0x0B, *range(0x0D, 0x29), *range(0x2C, 0x35), *range(0x36, 0x39)]  # 我方角色的人物表编号
+LYN_ONLY = {0x03, 0x0D, 0x17, 0x18, 0x1C, 0x1D}  # 这几位在琳篇用单独一条数据（艾利乌德篇的在 0x2D～0x32）
+JOIN_LEVELS = {0x04: 5, 0x06: 3, 0x07: 8, 0x0F: 4}  # 雷万、疾、卡雷尔、露依斯：作为敌方/友军登场后交谈加入，等级写在关卡部队配置里，人物表里是 1
+ENEMY_CLASSES = (0x38, 0x39, 0x43, 0x45, 0x46)  # 只有敌人用的职业：士兵、山贼、封魔者、灾祸招致者、太古的火龙
+
+
+def unit_data(rom, tbl):
+    """我方角色和职业的能力数据（能力按 STATS 顺序，表里没有的项为 None）。
+    人物表（0x34 字节）：+5 职业，+0xB 等级，+0xC 起 HP/力/技/速/守/魔防/幸运/体格 的个人加成（有符号），
+    +0x1C 起 HP/力/技/速/守/魔防/幸运 成长率。
+    职业表（0x54 字节）：+5 转职后（已转职的指回转职前），+0xB 起 HP/力/技/速/守/魔防/体格/移动 基础值，
+    +0x13 起 HP～体格 上限（幸运上限固定 30），+0x1B 起成长率，+0x22 起 HP～魔防 转职加成，+0x29 bit0 = 已转职。"""
+    d = rom.d
+    s8 = lambda b: b - 256 if b > 127 else b
+    pick = lambda vals, order: {s: dict(zip(order, vals)).get(s) for s in STATS}  # 数据比 order 短时后面的项为 None
+    char_order, class_order = ('HP', '力量', '技术', '速度', '守备', '魔防', '幸运', '体格'), ('HP', '力量', '技术', '速度', '守备', '魔防', '体格', '移动')
+    growth_order = ('HP', '力量', '技术', '速度', '守备', '魔防', '幸运')
+    classes = {}
+    for k, nid, a in table(rom, tbl, CLASS_TABLE, 0x54, 4):
+        classes[k] = {'id': k, 'name': text(rom, tbl, nid), 'promoted': bool(d[a + 0x29] & 1), 'to': d[a + 5],
+                      'base': pick(d[a + 0xB:a + 0x13], class_order), 'cap': {**pick(d[a + 0x13:a + 0x1A], class_order), '幸运': 30},
+                      'growth': pick(d[a + 0x1B:a + 0x22], growth_order), 'promo': pick(d[a + 0x22:a + 0x28], class_order)}
+    chars = []
+    for k, nid, a in table(rom, tbl, CHAR_TABLE, 0x34, 4):
+        if k not in PLAYABLE:
+            continue
+        c, own = classes[d[a + 5]], pick([s8(b) for b in d[a + 0xC:a + 0x14]], char_order)
+        base = {s: (c['base'][s] or 0) + (own[s] or 0) for s in STATS}  # 显示值 = 职业基础值 + 个人加成
+        chars.append({'id': k, 'name': text(rom, tbl, nid), 'class': d[a + 5], 'lv': JOIN_LEVELS.get(k, d[a + 0xB]), 'lyn': k in LYN_ONLY,
+                      'base': base, 'growth': pick(d[a + 0x1C:a + 0x23], growth_order)})
+    # 列出我方用到的职业、它们的转职目标，再加敌方专属职业；同名职业（男女版、三位主角的领主）用第一个使用者区分
+    shown = {}
+    for ch in chars:
+        c = classes[ch['class']]
+        shown.setdefault(c['id'], ch['name'])
+        if not c['promoted'] and c['to'] in classes:
+            shown.setdefault(c['to'], ch['name'])
+    for k in ENEMY_CLASSES:
+        shown.setdefault(k, None)
+    names = [classes[k]['name'] for k in shown]
+    for k, user in shown.items():
+        c = classes[k]
+        c['label'] = f'{c["name"]}（{user}）' if names.count(c['name']) > 1 else c['name']
+    return chars, [classes[k] for k in sorted(shown)], classes
+
+
 CHAPTER_DATA = 0xD62184   # 第 0 章条目里「事件编号」字节的位置；条目 0x94 字节，-4 处是章节名文本ID
 POINTER_TABLE = 0xD648F4  # 事件头：+0x38 开场剧情；各章剧情脚本按章节顺序连续存放
 EVENTS_END = 0xD88708     # 最后一章剧情脚本的结束位置
@@ -221,6 +266,8 @@ TEXT_OPS = {0x0D: (0, 1, False), 0x11: (0, 1, True), 0xD2: (0, 1, True), 0xD4: (
             0x19: (1, 2, False),                       # [条件, A, B]：两版只差头像站位，取 A
             0x1A: (1, 2, False), 0x1B: (1, 2, False)}  # [判断函数, A, B]：条件满足（军师在场/某角色在队）时 A，否则 B
 MODE_OPS = (0x0F, 0x12)
+BG_OP, BG_COUNT = 'bg', 95  # 场景背景切换（事件指令 0x05，见 chapter_events）
+CG_SHOW, CG_FADE, CG_COUNT = 0xD6, 0xDD, 66  # 剧情插画：0xD6 高 16 位是插画编号；0xDD 渐变切换，第 1 个参数是编号
 ALT_OPS = (0x1A, 0x1B)
 # 事件流程控制：0x42 标签、0x43 无条件跳转、0x44–0x4E 条件判断（第一个参数都是目标标签）。
 # 分支剧情里，跳到标签处的文本要沿用跳转前的头像，而不是上一条（另一分支）文本的
@@ -244,7 +291,13 @@ CHAPTER_TEXTS = range(0x833, 0xF36)  # 剧情文本按章节连续编号（含�
 # 未被事件引用的文本默认归到编号在它之前的那一章；例外：第4章防卫图的教学与评价排在第4章剧情之前
 CHAPTER_OVERRIDES = {t: 4 for t in range(0x8EA, 0x8FD)}
 DEATH_TEXTS = range(0x7B4, 0x80C)
-EPILOGUE_TEXTS = [*range(0xFC6, 0xFE4), *range(0x1014, 0x1096)]
+LYN_ENDINGS = 0xDB7D14     # 琳篇结局：每项 12 字节 [人物][结局][负伤时的结局]，文本第一行是称号；人物为 0 结束
+ENDING_TITLES = 0xDB85F4   # 本篇结局称号：每项 8 字节 [人物][称号文本]
+ENDING_LISTS = 0xDB85EC    # 本篇结局顺序（艾利乌德篇、赫克托耳篇各一份，内容相同）：每项 8 字节 [类型][人物1][人物2][-][文本]；
+#                            类型 1 个人结局，2 双人结局（A 支援），3、4 固定一起出场的两人（妮妮安姐弟、潘特夫妇），5 结束
+TACTICIAN = 0xCD
+TACTICIAN_ENDINGS = (0x1069, 0x106B, 0x106D)  # 本篇军师结局：三种称号，各接一段正文
+EPILOGUE_EXTRA = {0x03: [0xFE1], 0x02: [0x1016]}  # 表外的结局文本：琳篇结尾旁白、赫克托耳的另一版个人结局
 
 
 def fmt(lines):
@@ -439,6 +492,12 @@ def chapter_events(rom, k):
                 out.append((op, ids))
         elif op >> 16 <= 1 and ((op & 0xFFFF) in (LABEL_OP, GOTO_OP) or (op & 0xFFFF) in IF_OPS) and rom.u32(a + 4) < 0x100:
             out.append((op & 0xFFFF, [rom.u32(a + 4), rom.u32(a + 8), op >> 16]))  # [标签, 条件参数, 是否打包格式]
+        elif op & 0xFFFF == 0x05 and op >> 16 < BG_COUNT and any(rom.u32(a + 4 * j) & 0xFF == 0x8D for j in (1, 2, 3)):
+            out.append((BG_OP, [f'bg/{op >> 16:02d}']))  # 换背景（高 16 位是背景编号），后面紧跟淡入
+        elif op & 0xFFFF == CG_SHOW and op >> 16 < CG_COUNT:
+            out.append((BG_OP, [f'cg/{op >> 16:02d}']))
+        elif op == CG_FADE and rom.u32(a + 4) < CG_COUNT and rom.u32(a + 8) < 0x10:
+            out.append((BG_OP, [f'cg/{rom.u32(a + 4):02d}']))
     return out
 
 
@@ -482,8 +541,8 @@ def build_pages(rom, tbl, faces):
     'index': [(分组名, [(链接文字, 第几个小标题)])]（可选，网页顶部的索引）}]，每条文本只出现一次。"""
     tags, table_ch, supports, names = quote_tables(rom, tbl)
     events = {k: chapter_events(rom, k) for ks, _ in CHAPTERS for k in ks}
-    used = {t for k in events for _, ids in events[k] for t in ids}
-    starts = sorted((min(t for _, ids in events[k] for t in ids if t >= CHAPTER_TEXTS.start), k) for k in events)
+    used = {t for k in events for op, ids in events[k] if op in TEXT_OPS for t in ids}
+    starts = sorted((min(t for t in (t for op, ids in events[k] if op in TEXT_OPS for t in ids) if t >= CHAPTER_TEXTS.start), k) for k in events)
     leftovers = {}
     for t in CHAPTER_TEXTS:
         if t not in used and rom.raw(t):
@@ -514,13 +573,16 @@ def build_pages(rom, tbl, faces):
         if wm_entries:
             sections.append(('世界地图旁白', wm_entries))
 
-        story = []
+        story, bgs, bg, shown_bg = [], {}, None, None
         copy = lambda st: {k: v and {'slots': dict(v['slots']), 'cur': v['cur']} for k, v in st.items()}
         for k in ks:
             state, saved, dead = {'A': None, 'B': None, 'alt': None}, {}, False
             btags = branch_tags(events[k], k, names)
             ttags = talk_events(rom, k, names)
             for pos, (op, ids) in enumerate(events[k]):
+                if op == BG_OP:
+                    bg = ids[0]
+                    continue
                 if op not in TEXT_OPS:  # 流程控制：记下跳转时的头像状态，跳转后进入标签时恢复
                     if op == LABEL_OP and ids[0] in saved:
                         if dead:  # 只能从跳转进入
@@ -551,12 +613,14 @@ def build_pages(rom, tbl, faces):
                         state['B'] = {'slots': dict(st['slots']), 'cur': st['cur']}
                     if t not in done and lines:
                         story.append((t, btags.get(pos, '') + ttags.get(t, '') + tag, lines))
+                        if bg is not None and bg != shown_bg:  # 背景换了：在这一段前面放背景图
+                            bgs[t] = shown_bg = bg
                     done.add(t)
         sections.append(('剧情', story))
         rest = entries(t for k in ks for t in leftovers.get(k, []))
         if rest:
             sections.append(('本章其他文本（战斗对话、阵亡台词、村庄、教学提示等）', rest))
-        pages.append({'name': f'{n:02d}_{label}_{title}', 'title': f'{label}　{title}', 'sections': sections})
+        pages.append({'name': f'{n:02d}_{label}_{title}', 'title': f'{label}　{title}', 'sections': sections, 'bgs': bgs})
 
     # 支援：每个角色一页（配对在双方页面都出现），总页 'hub' 是角色 -> 支援对象的索引
     pairs = []
@@ -572,7 +636,7 @@ def build_pages(rom, tbl, faces):
     for n, name in enumerate(sorted({x for a, b, *_ in pairs for x in (a, b)}, key=lambda x: first.get(x, 999))):
         slug = f'sup{first.get(name, 0):02x}'
         mine = [(b if a == name else a, items, lvs) for a, b, items, lvs in pairs if name in (a, b)]
-        subpages.append({'name': f'{n:02d}_{name}', 'title': f'{name}的支援对话', 'slug': slug,
+        subpages.append({'name': f'{n:02d}_{name}', 'title': f'{name}的支援对话', 'slug': slug, 'who': name,
                          'sections': [(f'{name} × {o}', items) for o, items, _ in mine],
                          'index': [('', [(o, j) for j, (o, _, _) in enumerate(mine)])]})
         hub.append((name, slug, [(o, j, lvs) for j, (o, _, lvs) in enumerate(mine)]))
@@ -589,9 +653,78 @@ def build_pages(rom, tbl, faces):
     pages.append({'name': '阵亡与撤退台词', 'title': '阵亡与撤退台词', 'sections': sections,
                   'index': [('角色', [(n, i) for i, (n, _) in enumerate(sections)])]})
 
-    for name, ids in (('结局与后日谈', EPILOGUE_TEXTS), ('其他文本（系统、说明、菜单等）', range(TEXT_COUNT))):
-        pages.append({'name': name, 'title': name, 'sections': [('', entries(ids))]})
+    pages.append(ending_page(rom, tbl, names, entries, done))
+    pages.append({'name': '其他文本（系统、说明、菜单等）', 'title': '其他文本（系统、说明、菜单等）',
+                  'sections': [('', entries(range(TEXT_COUNT)))]})
     return pages
+
+
+def ending_page(rom, tbl, names, entries, done):
+    """结局与后日谈，按 ROM 里的结局表排成卡片：'endings': [(分组, 说明, [{'who': [头像角色], 'title': (称号, 名字),
+    'ids': [称号文本ID], 'texts': [(文本ID, 标签, 剧本行)]}])]；'sections' 是同样内容的纯文本版。"""
+    def body(t, tag=''):
+        return entries([t], tag=lambda _: tag)
+
+    def title(t):  # 「称号　名字」
+        epithet, _, name = script(rom, tbl, t, {})[0][1].partition('　')
+        return epithet, name
+
+    lyn, a = [], LYN_ENDINGS
+    while rom.u32(a):
+        c, ok, hurt = rom.u32(a), rom.u32(a + 4), rom.u32(a + 8)
+        name = '{军师名}' if c == TACTICIAN else names[c]
+        texts = body(ok) + body(hurt, '另一版本' if c == TACTICIAN else '负伤时')
+        epithet = texts[0][2][0][1].partition('　')[0]
+        for k, (t, tag, lines) in enumerate(texts):  # 去掉开头的「称号　名字」
+            s = lines[0][1].partition('　')[2]
+            assert s.startswith(name), (hex(t), s)
+            texts[k] = (t, tag, [(None, s[len(name):])] + lines[1:])
+        texts = texts[:1] + [x for e in EPILOGUE_EXTRA.get(c, []) for x in body(e)] + texts[1:]
+        lyn.append({'who': [] if c == TACTICIAN else [name], 'title': (epithet, name), 'ids': [], 'texts': texts})
+        a += 12
+
+    order = []
+    for k in range(2):
+        a = rom.u32(ENDING_LISTS + 4 * k) - 0x08000000
+        while rom.d[a] != 5:
+            order.append((rom.d[a], rom.d[a + 1], rom.d[a + 2], rom.u32(a + 4)))
+            a += 8
+    order = list(dict.fromkeys(order))
+    titles, a = [], ENDING_TITLES
+    while rom.u32(a):
+        titles.append((rom.u32(a), rom.u32(a + 4)))
+        a += 8
+    solo, seen = [], set()
+    for c, _ in titles:
+        if c in seen:
+            continue
+        both = next((e for e in order if e[0] in (3, 4) and c in e[1:3]), None)  # 固定一起出场的两人合成一张卡
+        members = [m for m, _ in titles if m in (both[1:3] if both else (c,))]
+        seen.update(members)
+        ids = [t for m, t in titles if m in members]
+        done.update(ids)
+        heads = [title(t) for t in ids]
+        texts = [x for m in members for ty, c1, _, t in order if ty == 1 and c1 == m for x in body(t)]
+        texts += [x for m in members for e in EPILOGUE_EXTRA.get(m, []) for x in body(e, '另一版本')]
+        if both:
+            ty, c1, c2, t = both
+            texts += body(t) + (body(t + 1, f'{names[c1]}负伤时') + body(t + 2, f'{names[c2]}负伤时') if ty == 4 else [])
+        solo.append({'who': [names[m] for m in members], 'ids': ids, 'texts': texts,
+                     'title': ('、'.join(dict.fromkeys(e for e, _ in heads)), ' × '.join(n for _, n in heads))})
+    for t in TACTICIAN_ENDINGS:
+        done.add(t)
+        solo.append({'who': [], 'title': title(t), 'ids': [t], 'texts': body(t + 1)})
+    pairs = [{'who': [names[c1], names[c2]], 'title': ('', f'{names[c1]} × {names[c2]}'), 'ids': [], 'texts': body(t)}
+             for ty, c1, c2, t in order if ty == 2]
+
+    groups = [('琳篇', '琳篇通关后显示。在琳篇的战斗中负伤撤退的同伴，显示「负伤时」的版本。', lyn),
+              ('个人结局', '艾利乌德篇、赫克托耳篇通关后，按角色依次显示。', solo),
+              ('双人结局', '两人的支援对话进行到 A 级时，结局显示这段双人结局，代替两人各自的个人结局。', pairs)]
+    sections = []
+    for g, _, cards in groups:
+        sections.append((g, []))
+        sections += [('　'.join(filter(None, c['title'])), c['texts']) for c in cards]
+    return {'name': '结局与后日谈', 'title': '结局与后日谈', 'endings': groups, 'sections': sections}
 
 
 def write_txt(page, path):
@@ -602,242 +735,3 @@ def write_txt(page, path):
         body += [f'#{t:04X}{tag}\n{fmt(lines)}' for t, tag, lines in items]
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n\n'.join(body) + '\n')
-
-SITE_CSS = """:root{--bg:#fbfaf7;--fg:#1f1f1f;--muted:#6f6c66;--line:#e4e1da;--accent:#9b2c2c;--card:#fff;--mark:#fbefc4;--l:36%}
-@media (prefers-color-scheme:dark){:root{--bg:#17171a;--fg:#e6e4df;--muted:#9a978f;--line:#2e2d33;--accent:#e8917f;--card:#202026;--mark:#3d3520;--l:72%}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;overflow-wrap:anywhere}
-main,nav{max-width:42em;margin:0 auto;padding:0 16px}
-nav{display:flex;gap:1em;justify-content:space-between;padding-top:12px;padding-bottom:12px;font-size:15px}
-a{color:var(--accent);text-decoration:none}
-h1{font-size:1.45em;line-height:1.4;margin:.4em 0 .8em}
-h2{font-size:1.05em;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:.3em;margin-top:2.4em}
-article{margin:1.1em 0;padding-bottom:.7em;border-bottom:1px dashed var(--line)}
-article header{font-size:13px;color:var(--muted)}
-article header a{color:var(--muted)}
-.tag{color:var(--accent);margin-left:.5em}
-p{margin:.1em 0}
-b{font-weight:600;color:hsl(var(--h) 55% var(--l))}
-.toc{padding-left:0;list-style:none}.toc li{margin:.25em 0}.toc small{color:var(--muted);display:inline-block;min-width:11em}
-.note{color:var(--muted);font-size:14px}
-.jump{font-size:15px;line-height:2;border:1px solid var(--line);border-radius:8px;padding:.4em .9em;margin-bottom:1em}
-.jump summary{cursor:pointer;color:var(--muted)}
-.jump b{margin-right:.8em}
-.jump a{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:0 .75em;margin:.2em .4em .2em 0;line-height:1.9;white-space:nowrap;background:var(--card)}
-.hub{display:flex;flex-wrap:wrap;gap:.5em;margin-top:1em}
-.hub details{border:1px solid var(--line);border-radius:999px;background:var(--card)}
-.hub details[open]{flex-basis:100%;border-radius:12px;border-color:var(--muted)}
-.hub summary{list-style:none;cursor:pointer;padding:.25em .9em;user-select:none}
-.hub summary::-webkit-details-marker{display:none}
-.hub small{color:var(--muted);font-size:12px;margin-left:.4em}
-.partners{display:flex;flex-wrap:wrap;gap:.45em;padding:.6em .8em .9em;border-top:1px dashed var(--line)}
-.partners a{border:1px solid var(--line);border-radius:999px;padding:.1em .75em;font-size:15px;background:var(--bg)}
-.partners a.all{border-style:dashed;color:var(--muted)}
-h2 .up{float:right;font-size:13px;font-weight:normal}
-table{border-collapse:collapse;width:100%;font-size:15px}
-th,td{border-bottom:1px solid var(--line);padding:.35em .5em;text-align:left;vertical-align:top}
-body{padding-bottom:64px}
-.cmp>summary{list-style:none;cursor:pointer}.cmp>summary::-webkit-details-marker{display:none}
-.cmp>summary>span{display:block;background:var(--mark);border-radius:4px;padding:0 .3em;margin:0 -.3em}
-.mk{font-style:normal;font-size:11px;color:var(--muted);border:1px solid var(--muted);border-radius:999px;padding:0 .5em;margin-left:.4em;white-space:nowrap;vertical-align:1px}
-.cmp[open] .mk{background:var(--muted);color:var(--card)}
-.old{border-left:3px solid var(--mark);margin:.25em 0 .6em;padding:.1em 0 .1em .7em;color:var(--muted)}
-.old::before{content:"火花原文";display:block;font-size:12px}
-.src{margin-left:.5em}
-.ver{position:fixed;right:12px;bottom:12px;display:flex;border:1px solid var(--line);border-radius:999px;background:var(--card);box-shadow:0 2px 10px rgba(0,0,0,.15);overflow:hidden;font-size:14px;z-index:9}
-.ver a{color:var(--muted);padding:.5em 1em}
-html:not(.jt) .ver [data-v=hh],html.jt .ver [data-v=jt]{background:var(--accent);color:var(--card)}
-"""
-SITE_SLUGS = {'支援对话': 'support', '阵亡与撤退台词': 'death', '结局与后日谈': 'epilogue',
-              '其他文本（系统、说明、菜单等）': 'misc'}
-
-
-def renamer(names):
-    """火花译名 -> 堇天译名的整体替换函数（长名优先）。"""
-    if not names:
-        return lambda s: s
-    pat = re.compile('|'.join(map(re.escape, sorted(names, key=len, reverse=True))))
-    abbr = names.get('赫克托耳', '赫')[:1]  # 章号缩写「赫16章」跟着改
-    return lambda s: re.sub(r'赫(?=\d)', abbr, pat.sub(lambda m: names[m.group(0)], s)) if s else s
-
-
-def write_site(pages, glossary, site, jt=None):
-    """生成一套网页。jt=None 为火花原版（site 根目录）；jt={'fixes', 'names'} 为堇天修正版（site/jt/）：
-    fixes: {文本ID: [(原文锚点, 修正行, (专栏cv号, 条目号))]}，names: {火花译名: 堇天译名}。"""
-    import html, zlib
-    esc = html.escape
-    fixes, T = (jt['fixes'], renamer(jt['names'])) if jt else ({}, lambda s: s)
-    applied = set()  # 网页上实际生效的纠错（专栏cv号, 条目号）
-    root, out_dir = ('../', os.path.join(site, 'jt')) if jt else ('', site)
-    os.makedirs(out_dir, exist_ok=True)
-    if not jt:
-        open(os.path.join(site, '.nojekyll'), 'w').close()
-        with open(os.path.join(site, 'style.css'), 'w', encoding='utf-8') as f:
-            f.write(SITE_CSS)
-    slug = lambda p: p.get('slug') or ('c' + p['name'][:2] if p['name'][:2].isdigit() else SITE_SLUGS[p['name']])
-
-    def doc(title, nav, body, file):
-        hh, jt_link = (f'../{file}', file) if jt else (file, f'jt/{file}')
-        switch = (f'<div class="ver"><a data-v="hh" href="{hh}">火花原版</a><a data-v="jt" href="{jt_link}">{JINTIAN_LABEL}</a></div>'
-                  '<script>document.querySelectorAll(".ver a").forEach(function(a){a.onclick=function(){'
-                  'location.href=a.getAttribute("href")+location.hash;return false}})</script>')
-        return (f'<!doctype html><html lang="zh-CN"{" class=\"jt\"" if jt else ""}><head><meta charset="utf-8">'
-                f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-                f'<title>{esc(T(title))}{f"（{JINTIAN_LABEL}）" if jt else ""}</title><link rel="stylesheet" href="{root}style.css"></head>'
-                f'<body>{nav}<main>{body}</main>{nav}{switch}</body></html>\n')
-
-    def line(sp, s, tag='p', raw=False):  # raw：对照用的火花原文，不换译名
-        t = (lambda x: x) if raw else T
-        return f'<{tag}>{who(sp, raw)}：{esc(t(s))}</{tag}>' if sp else f'<{tag}>{esc(t(s))}</{tag}>'
-
-    def who(name, raw=False):  # 每个角色固定一个颜色（按火花名算，两版一致）
-        return f'<b style="--h:{zlib.crc32(name.encode()) % 360}">{esc(name if raw else T(name))}</b>'
-
-    def render(lines, groups):
-        """改动组显示修正文（黄底），句尾「原文」点开可对照火花原文。"""
-        out, k = [], 0
-        for start, end, old in groups:
-            out += [line(sp, s) for sp, s in lines[k:start]]
-            new = [line(sp, s, 'span') for sp, s in lines[start:end]]
-            new[-1] = new[-1][:-len('</span>')] + '<i class="mk">原文</i></span>'
-            out.append('<details class="cmp"><summary>' + ''.join(new) + '</summary><div class="old">'
-                       + ''.join(line(sp, s, raw=True) for sp, s in old) + '</div></details>')
-            k = end
-        return ''.join(out + [line(sp, s) for sp, s in lines[k:]])
-
-    def jump(index):
-        rows = ''.join(f'<p>{who(g) if len(index) > 1 else ""}'
-                       + ''.join(f'<a href="#s{j}">{esc(T(t))}</a>' for t, j in links) + '</p>' for g, links in index)
-        return f'<details id="idx" class="jump" open><summary>索引</summary>{rows}</details>'
-
-    def hub(chars):  # 角色胶囊：点开显示支援对象（同一时间只展开一个），点对象跳到对话
-        out = []
-        for name, sl, partners in chars:
-            links = ''.join(f'<a href="{sl}.html#s{j}">{who(o)}<small>{esc(lv)}</small></a>' for o, j, lv in partners)
-            out.append(f'<details name="sup"><summary>{who(name)}<small>{len(partners)}</small></summary>'
-                       f'<div class="partners">{links}<a class="all" href="{sl}.html">全部 →</a></div></details>')
-        return '<p class="note">点角色展开支援对象，再点对象跳到对话。名字旁的数字是支援对象数，C·B·A 是可进行的支援等级。</p>' \
-               '<div class="hub">' + ''.join(out) + '</div>'
-
-    def write_pages(ps, home, home_title, prev_text, next_text):
-        for i, p in enumerate(ps):
-            prev = f'<a href="{slug(ps[i - 1])}.html" title="{esc(T(ps[i - 1]["title"]))}">← {prev_text}</a>' if i else '<span></span>'
-            nxt = f'<a href="{slug(ps[i + 1])}.html" title="{esc(T(ps[i + 1]["title"]))}">{next_text} →</a>' if i + 1 < len(ps) else '<span></span>'
-            nav = f'<nav>{prev}<a href="{home}">{home_title}</a>{nxt}</nav>'
-            body = [f'<h1>{esc(T(p["title"]))}</h1>']
-            if p.get('hub'):
-                body.append(hub(p['hub']))
-                write_pages(p['subpages'], slug(p) + '.html', '支援目录', '上一位', '下一位')
-            if p.get('index'):
-                body.append(jump(p['index']))
-            n_fix = 0
-            for j, (head, items) in enumerate(p['sections']):
-                if head:
-                    up = '<a class="up" href="#idx">↑ 索引</a>' if p.get('index') else ''
-                    body.append(f'<h2 id="s{j}">{esc(T(head))}{up}</h2>')
-                for t, tag, lines in items:
-                    tag_html = f'<span class="tag">{esc(T(tag))}</span>' if tag else ''
-                    lines, groups = apply_fixes(lines, [(a, f, sp) for a, f, _, sp in fixes.get(t, [])])
-                    if groups:
-                        n_fix += 1
-                        applied.update(src for _, _, src, _ in fixes[t])
-                        links = ''.join(f'<a href="https://www.bilibili.com/read/cv{cv}/" target="_blank">#{no}</a> '
-                                        for _, _, (cv, no), _ in fixes[t])
-                        tag_html += f'<span class="src">堇天纠错 {links}</span>'
-                    body.append(f'<article id="t{t:04X}"><header><a href="#t{t:04X}">#{t:04X}</a>{tag_html}</header>'
-                                + render(lines, groups) + '</article>')
-            if n_fix:
-                body.insert(1, f'<p class="note">本页有 {n_fix} 段文本采用了堇天的修正（黄色底色），点句尾「原文」可对照火花原文。</p>')
-            if any('【分支' in tag for _, items in p['sections'] for _, tag, _ in items):
-                body.insert(1, '<p class="note">标有【分支n·情况1】【分支n·情况2】的段落是条件分支（如某角色是否在场、战斗中是否触发），'
-                               '同一个分支的两种情况，游戏中只会出现其中一种。</p>')
-            with open(os.path.join(out_dir, slug(p) + '.html'), 'w', encoding='utf-8') as f:
-                f.write(doc(p['title'], nav, ''.join(body), slug(p) + '.html'))
-
-    write_pages(pages, 'index.html', '目录', '上一页', '下一页')
-
-    kinds = list(dict.fromkeys(r[0] for r in glossary[1:]))
-    body = ['<h1>名词表</h1>', jump([('', [(k, j) for j, k in enumerate(kinds)])])]
-    for j, kind in enumerate(kinds):
-        uniq = dict.fromkeys((r[2], r[3]) for r in glossary[1:] if r[0] == kind)  # 同名同说明的重复条目只留一条
-        rows = ''.join(f'<tr><td>{esc(T(n))}</td><td>{esc(T(desc))}</td></tr>' for n, desc in uniq)
-        body.append(f'<h2 id="s{j}">{esc(kind)}<a class="up" href="#idx">↑ 索引</a></h2>'
-                    f'<table><tr><th>名称</th><th>说明</th></tr>{rows}</table>')
-    nav = '<nav><span></span><a href="index.html">目录</a><span></span></nav>'
-    with open(os.path.join(out_dir, 'names.html'), 'w', encoding='utf-8') as f:
-        f.write(doc('名词表', nav, ''.join(body), 'names.html'))
-
-    def toc(ps):
-        items = []
-        for p in ps:
-            label, _, title = p['title'].partition('　')
-            items.append(f'<li><a href="{slug(p)}.html"><small>{esc(T(label))}</small>{esc(T(title))}</a></li>')
-        return '<ul class="toc">' + ''.join(items) + '</ul>'
-    chapters = [p for p in pages if p['name'][:2].isdigit()]
-    jt_link = f'<a href="{JINTIAN_URL}" target="_blank">堇天《狼组•火花汉化版错译盘点》</a>'
-    if jt:
-        n = len(applied)
-        intro = (f'<h1>火焰纹章 烈火之剑 汉化版文本（{JINTIAN_LABEL}）</h1><p class="note">在火花 × 狼组汉化版的基础上，'
-                 f'采用 {jt_link} 的 {n} 条修正替换错译（修改处以黄色底色标出，并附原文章链接），人名统一使用堇天的译名。'
-                 '右下角可切回火花原版。<br>')
-    else:
-        intro = ('<h1>火焰纹章 烈火之剑 汉化版文本</h1><p class="note">文本出自火花 × 狼组汉化版，仅供查阅参考，版权归原作及汉化组所有。<br>'
-                 f'右下角可切换到「{JINTIAN_LABEL}」：采用 {jt_link} 的修正译文替换原版中的错译。<br>')
-    body = (intro + T('章号中「艾」指艾利乌德篇、「赫」指赫克托耳篇。').replace('「赫」', f'「{T("赫1")[0]}」')
-            + '每段开头的 #编号 是游戏内文本编号。'
-            + T('标有【艾利乌德篇】【赫克托耳篇】的段落只在对应篇章出现；标有【分支】的段落是条件分支，同一分支的几种情况游戏中只会出现一种。')
-            + '</p>'
-            '<h2>琳篇</h2>' + toc(chapters[:12]) + '<h2>艾利乌德篇・赫克托耳篇</h2>' + toc(chapters[12:])
-            + '<h2>其他</h2><ul class="toc">'
-            + ''.join(f'<li><a href="{slug(p)}.html">{esc(T(p["title"]))}</a></li>' for p in pages if not p['name'][:2].isdigit())
-            + '<li><a href="names.html">名词表（人物・职业・道具）</a></li></ul>')
-    with open(os.path.join(out_dir, 'index.html'), 'w', encoding='utf-8') as f:
-        f.write(doc('烈火之剑 汉化版文本', '', body, 'index.html'))
-
-
-if __name__ == '__main__':
-    import csv, glob, json, sys
-    here = os.path.dirname(os.path.abspath(__file__))
-    rom = Rom(sys.argv[1] if len(sys.argv) > 1 else glob.glob(os.path.join(here, 'rom', '*.gba'))[0])
-    tbl = load_tbl(os.path.join(here, 'fe7_cn.tbl'))
-    out = os.path.join(here, 'output'); os.makedirs(os.path.join(out, '章节'), exist_ok=True)
-    faces = face_names(rom, tbl)
-
-    with open(os.path.join(out, '全文本.txt'), 'w', encoding='utf-8') as f:
-        for i in range(TEXT_COUNT):
-            body = script(rom, tbl, i, faces)
-            if body:
-                f.write('#%04X\n%s\n\n' % (i, fmt(body)))
-
-    glossary = [['类别', '编号', '名称', '说明']]
-    for kind, base, size, off in (('人物', CHAR_TABLE, 0x34, 4), ('职业', CLASS_TABLE, 0x54, 4), ('道具', ITEM_TABLE, 0x24, 6)):
-        for k, name_id, a in table(rom, tbl, base, size, off):
-            glossary.append([kind, '%02X' % k, text(rom, tbl, name_id), text(rom, tbl, rom.u16(a + 2)).replace('\n', ' ')])
-    with open(os.path.join(out, '名词表.csv'), 'w', encoding='utf-8-sig', newline='') as f:
-        csv.writer(f).writerows(glossary)
-
-    pages = build_pages(rom, tbl, faces)
-    for p in pages:
-        if 'subpages' in p:  # 支援对话：每个角色一个文件
-            os.makedirs(os.path.join(out, p['name']), exist_ok=True)
-            for sp in p['subpages']:
-                write_txt(sp, os.path.join(out, p['name'], sp['name'] + '.txt'))
-            continue
-        sub = '章节' if p['name'][:2].isdigit() else ''
-        write_txt(p, os.path.join(out, sub, p['name'] + '.txt'))
-    fixes = {}  # 堇天纠错（jintian.py 生成）：{文本ID: [(原文锚点, 修正行, (cv号, 条目号))]}
-    jt_path = os.path.join(here, 'jintian.json')
-    for r in (json.load(open(jt_path, encoding='utf-8')) if os.path.exists(jt_path) else []):
-        fix = [(sp, renamer({**JINTIAN_TYPOS, '玛克': '{军师名}'})(t)) for sp, t in r['fix']]
-        for i in r.get('ids', []):
-            fixes.setdefault(int(i, 16), []).append((r['anchor'], fix, (r['cv'], r['no']), r.get('speaker')))
-    write_site(pages, glossary, os.path.join(here, 'docs'))  # GitHub Pages：main 分支 /docs
-    write_site(pages, glossary, os.path.join(here, 'docs'), jt={'fixes': fixes, 'names': JINTIAN_NAMES})
-
-    # 自检：几处人工核对过的原文
-    assert '纵横捭阖' in text(rom, tbl, 0x6CD).replace('\n', '')
-    assert '克扣我军饷' in text(rom, tbl, 0x7F).replace('\n', '')
-    ch = lambda n: open(glob.glob(os.path.join(out, '章节', f'{n:02d}_*.txt'))[0], encoding='utf-8').read()
-    assert '琳：刚才的那些家伙们也叫我『琳迪斯』！\n肯特：！难道说……' in ch(1)  # 跨文本沿用头像
-    assert '多尔克斯被干掉了' not in ch(3) and '多尔克斯被干掉了' in ch(4)
-    print('完成：', out)
