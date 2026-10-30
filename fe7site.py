@@ -309,7 +309,14 @@ def write_home(doc, chapters, epilogue, T, jt, n_applied):
         pic = f'<img src="{ASSET}img/{img}.png" alt="" loading="lazy">' if img else '<i></i>'
         return f'<li><a href="{LINK}{page_path(p)}">{pic}<span><small>{esc(T(label))}</small>{esc(T(title or label))}</span></a></li>'
 
-    first_img = lambda p: next(iter(p.get('bgs', {}).values()), None)
+    used = set()
+
+    def first_img(p):  # 章节卡片配图：优先用前面卡片没用过的剧情插画，否则用第一张对话背景
+        imgs = list(p.get('bgs', {}).values())
+        k = next((k for k in imgs if k.startswith('cg/') and k not in used), next((k for k in imgs if k.startswith('bg/')), None))
+        used.add(k)
+        return k
+
     grid = lambda ps: '<ul class="chapters">' + ''.join(card(p, first_img(p)) for p in ps) + '</ul>'
     jt_link = f'<a href="{JINTIAN_URL}" target="_blank">堇天《狼组•火花汉化版错译盘点》</a>'
     if jt:
