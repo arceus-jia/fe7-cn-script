@@ -262,7 +262,7 @@ BONUS_ORDER = ('HP', '力量', '技术', '速度', '守备', '魔防', '幸运',
 def item_data(rom, tbl):
     """武器和道具。道具表（0x24 字节）：+0 名称，+2 说明，+7 种类，+8 属性位，+0xC 能力加成表，+0x10 特效对象表，
     +0x14 耐久，+0x15 威力，+0x16 命中，+0x17 重量，+0x18 必杀，+0x19 射程（高 4 位最小、低 4 位最大，最大 0 = 魔力/2），
-    +0x1A 单次价格，+0x1C 武器等级。"""
+    +0x1A 单次价格，+0x1C 武器等级，+0x1D 图标。"""
     d, items = rom.d, []
     for k, nid, a in table(rom, tbl, ITEM_TABLE, 0x24, 6):
         kind, attr, uses, rk, rng = d[a + 7], rom.u32(a + 8), d[a + 0x14], d[a + 0x1C], d[a + 0x19]
@@ -276,7 +276,7 @@ def item_data(rom, tbl):
         lock = next((n for bit, n in ITEM_LOCKS.items() if attr & bit), None)
         lo, hi = rng >> 4, rng & 15
         items.append({
-            'id': k, 'name': ''.join(s for _, s in script(rom, tbl, nid, {})), 'type': ITEM_TYPES[kind],
+            'id': k, 'icon': d[a + 0x1D], 'name': ''.join(s for _, s in script(rom, tbl, nid, {})), 'type': ITEM_TYPES[kind],
             'desc': text(rom, tbl, rom.u16(a + 2)).replace('\n', ' '),
             'rank': RANKS.get(rk) or (f'{lock}专用' if lock else None),
             'might': d[a + 0x15], 'hit': d[a + 0x16], 'crit': d[a + 0x18], 'weight': d[a + 0x17], 'uses': uses or None,

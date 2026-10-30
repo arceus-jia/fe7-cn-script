@@ -75,6 +75,7 @@ article header a{color:var(--muted)}
 .tag{color:var(--ember);margin-left:.5em}
 .src{margin-left:.5em}
 b{font-weight:600;color:hsl(var(--h) 55% var(--l))}
+.ic{width:32px;height:32px;max-width:none;vertical-align:middle;margin:-4px .3em -4px 0;image-rendering:pixelated}
 .av{width:1.6em;height:1.6em;max-width:none;border-radius:50%;vertical-align:-.45em;margin-right:.3em;image-rendering:pixelated;background:var(--line)}
 figure.scene{margin:1.8em 0 .8em}
 figure.scene img{display:block;width:100%;height:auto;border-radius:4px;image-rendering:pixelated;border:1px solid var(--line)}

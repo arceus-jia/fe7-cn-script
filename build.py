@@ -57,7 +57,7 @@ def main():
     music = json.load(open(os.path.join(here, 'music.json'), encoding='utf-8'))  # 曲目表，音频外链 Serenes Forest
     shutil.rmtree(site, ignore_errors=True)  # docs/ 全部由脚本生成，先清空，免得留下改名前的旧页面
     os.makedirs(site)
-    art = export_art(rom, tbl, faces, pages, units[0], site)
+    art = export_art(rom, tbl, faces, pages, units[0], items, site)
     write_site(pages, glossary, units, items, music, site, art=art)  # GitHub Pages：main 分支 /docs
     write_site(pages, glossary, units, items, music, site, jt={'fixes': fixes, 'names': JINTIAN_NAMES}, art=art)
 

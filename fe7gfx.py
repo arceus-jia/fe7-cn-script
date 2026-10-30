@@ -140,6 +140,15 @@ def face_crop(d, pid, size=56):
     return crop(c, x, y, size, size)
 
 
+ICON_GFX, ICON_PAL = 0xC12F4, 0xC72F4  # 道具图标：每个 16×16（2×2 图块，0x80 字节），编号见道具表 +0x1D；共用一套调色板
+
+
+def icon(d, k):
+    c = Canvas(16, 16)
+    c.tiles4(d[ICON_GFX + k * 0x80:ICON_GFX + k * 0x80 + 0x80], 2, 2, palette(d, ICON_PAL))
+    return c
+
+
 CG_TABLE, CG_COUNT = 0xDB793C, 66  # 剧情 CG：每项 12 字节 [10 块图块指针的数组][排列表(宽高头, 自下而上)][调色板×8]
 
 

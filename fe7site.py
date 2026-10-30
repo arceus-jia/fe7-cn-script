@@ -307,22 +307,23 @@ def write_data(doc, units, items, glossary, T, who):
     rank = lambda r: (esc(T(r)), [*RANKS.values()].index(r) if r in RANKS.values() else 6) if r else None
     rng = lambda r: (r, r[:1])
     wrap = lambda x: f'<span class="w">{esc(T(x))}</span>' if x else ''
+    name = lambda i: f'<img class="ic" src="{ASSET}img/i/{i["icon"]:02x}.png" alt="" loading="lazy">{esc(T(i["name"]))}'
 
     def weapon_row(i):
         eff = i['effective']
         eff_html = f'<span title="{esc(T("、".join(eff[1])))}">{esc(T(eff[0]))}</span>' if eff else ''
-        return (esc(T(i['name'])), [rank(i['rank']), i['might'] if i['might'] < 255 else None, i['hit'], i['crit'],  # 月食威力 255 表示特殊
+        return (name(i), [rank(i['rank']), i['might'] if i['might'] < 255 else None, i['hit'], i['crit'],  # 月食威力 255 表示特殊
                                     i['weight'], rng(i['range']), i['uses'], i['price'], eff_html, esc(T(i['bonus'])), wrap(i['desc'])])
     parts = []
     for kind in dict.fromkeys(i['type'] for i in items):
         group = [i for i in items if i['type'] == kind]
         if kind == '杖':
             body = stat_table(['名称', '等级', '命中', '重量', '射程', '耐久', '价格', '说明'],
-                              [(esc(T(i['name'])), [rank(i['rank']), i['hit'], i['weight'], rng(i['range']), i['uses'], i['price'],
+                              [(name(i), [rank(i['rank']), i['hit'], i['weight'], rng(i['range']), i['uses'], i['price'],
                                                     wrap(i['desc'])]) for i in group])
         elif kind == '道具':
             body = stat_table(['名称', '次数', '价格', '能力加成', '说明'],
-                              [(esc(T(i['name'])), [i['uses'], i['price'], esc(T(i['bonus'])), wrap(i['desc'])]) for i in group])
+                              [(name(i), [i['uses'], i['price'], esc(T(i['bonus'])), wrap(i['desc'])]) for i in group])
         else:
             body = stat_table(['名称', '等级', '威力', '命中', '必杀', '重量', '射程', '耐久', '价格', '特效', '能力加成', '说明'],
                               [weapon_row(i) for i in group])
@@ -451,9 +452,9 @@ def write_music(doc, music, T):
         f'<ol class="tracks">{rows}</ol><script>{MUSIC_JS}</script>')
 
 
-def export_art(rom, tbl, faces, pages, chars, site):
+def export_art(rom, tbl, faces, pages, chars, items, site):
     """生成网页用到的图片（docs/img/）：说话人头像 f/（脸部 56×56）、支援和结局角色大头像 p/（96×80）、
-    对话背景 bg/ 和剧情插画 cg/（240×160）。返回 {'face': {名字: 路径}, 'portrait': {名字: 路径}}。"""
+    对话背景 bg/ 和剧情插画 cg/（240×160）、道具图标 i/（16×16）。返回 {'face': {名字: 路径}, 'portrait': {名字: 路径}}。"""
     name_pid = {}  # 名字 -> 头像编号：人物表登记的优先，其次开发者头像名单
     for _, nid, a in table(rom, tbl, CHAR_TABLE, 0x34, 4):
         name_pid.setdefault(text(rom, tbl, nid), rom.u16(a + 6))
@@ -474,7 +475,7 @@ def export_art(rom, tbl, faces, pages, chars, site):
                 speakers.update(o for o, _, _ in partners)
     walk(pages)
     art = {'face': {}, 'portrait': {}}
-    for sub in ('f', 'p', 'bg', 'cg'):
+    for sub in ('f', 'p', 'bg', 'cg', 'i'):
         os.makedirs(os.path.join(site, 'img', sub), exist_ok=True)
     for name in speakers | portraits:
         pid = name_pid.get(name)
@@ -489,4 +490,6 @@ def export_art(rom, tbl, faces, pages, chars, site):
     for k in scenes:  # 'bg/NN' 对话背景，'cg/NN' 剧情插画
         draw = fe7gfx.background if k.startswith('bg/') else fe7gfx.cg
         draw(rom.d, int(k[3:])).png(os.path.join(site, 'img', k + '.png'), alpha=False)
+    for k in {i['icon'] for i in items}:
+        fe7gfx.icon(rom.d, k).png(os.path.join(site, 'img', 'i', f'{k:02x}.png'))
     return art
