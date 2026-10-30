@@ -430,7 +430,6 @@ def write_search(doc, found, out_dir):
         + f'<script>{SEARCH_JS}</script>')
 
 
-MUSIC_BASE = 'https://serenesforest.net/wp-content/uploads/2014/06/'
 MUSIC_SRC = 'https://serenesforest.net/music/blazing-sword-game-rip/'
 MUSIC_JS = """(function(){
 var au=document.getElementById("au"),now=document.getElementById("now"),bs=[].slice.call(document.querySelectorAll(".tracks button")),cur=-1;
@@ -442,12 +441,12 @@ au.onended=function(){if(cur+1<bs.length)play(cur+1)};
 
 
 def write_music(doc, music, T):
-    """游戏音乐：音频直接用 Serenes Forest 的游戏原声录音（外链），本站不存音频。"""
-    rows = ''.join(f'<li><button type="button" data-src="{MUSIC_BASE}{esc(m["file"])}"><span>{m["no"]:03d}</span>'
+    """游戏音乐：音频在 docs/music/（Serenes Forest 的游戏原声录音转成的 64kbps AAC）。"""
+    rows = ''.join(f'<li><button type="button" data-src="{ASSET}music/{esc(m["file"])}"><span>{m["no"]:03d}</span>'
                    f'<b>{esc(m["title"])}</b><small>{esc(T(m["note"]))}</small></button></li>' for m in music)
     doc('other/music.html', '游戏音乐',
         f'<h1>游戏音乐</h1><p class="note">音乐室的全部 100 首，加上 4 段音乐室里没有的短曲。音频是 <a href="{MUSIC_SRC}" target="_blank">Serenes Forest</a> '
-        '录制的游戏原声，点曲名后直接从该网站播放，播完自动接下一首。曲名是官方英文名，使用场合译自 Serenes Forest 的资料。</p>'
+        '录制的游戏原声（为减小体积重新压缩过）。点曲名开始播放，播完自动接下一首。曲名是官方英文名，使用场合译自 Serenes Forest 的资料。</p>'
         '<div class="player"><audio id="au" controls preload="none"></audio><p id="now">点下面的曲名开始播放</p></div>'
         f'<ol class="tracks">{rows}</ol><script>{MUSIC_JS}</script>')
 

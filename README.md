@@ -54,7 +54,7 @@ v0.9 对应专栏里的初稿修正。堇天私下已在继续润色，正式版
 - **名词表**：人物、职业、道具及其说明
 - **其他文本**：系统提示、说明文字、菜单等
 - **全文搜索**：按关键词或文本编号搜索以上全部文本，直接跳到对应段落
-- **游戏音乐**：音乐室全部曲目，附使用场合，可在线播放（音频外链 [Serenes Forest](https://serenesforest.net/music/blazing-sword-game-rip/) 的游戏原声录音，本站不存音频）
+- **游戏音乐**：音乐室全部曲目，附使用场合，可在线播放（音频是 [Serenes Forest](https://serenesforest.net/music/blazing-sword-game-rip/) 录制的游戏原声，转成 64kbps AAC 后放在本站）
 
 ## 阅读说明
 
@@ -95,6 +95,7 @@ python3 build.py
   - `data/`：角色资料、职业资料、武器与道具、名词表
   - `search.html`：全文搜索；`search-data.js` 是搜索用的全部文本
   - `other/`：阵亡与撤退台词、系统与说明文本、游戏音乐
+  - `music/`：游戏音乐的音频（从仓库根目录的 `music/` 复制过来，两版共用）
   - `404.html` 会把旧版网址（如 `c05.html`）自动跳转到新位置
 - `output/`：纯文本版，包括按章节、按角色拆分的 txt、全文本和名词表 CSV（不入库）
 
@@ -108,6 +109,7 @@ python3 build.py
 | `fe7site.py` / `fe7site.css` | 网页生成和样式 |
 | `jintian.py` | 把堇天的专栏纠错匹配到游戏文本，生成 `jintian.json` |
 | `music.json` | 游戏音乐的曲目表：英文曲名、使用场合（译自 Serenes Forest）、音频文件名 |
+| `music/` | 游戏音乐的音频：Serenes Forest 的 MP3 用 `afconvert in.mp3 -o out.m4a -f m4af -d aac -b 64000 -s 1 -q 127` 转成，共约 81MB |
 
 堇天修正的数据在 `jintian.json`，由 `jintian.py` 从专栏正文生成，记录了每条纠错的原文、修正文和它在游戏文本里的位置。译名表、笔误更正和版本号在 `fe7text.py` 里的 `JINTIAN_*` 常量中。
 

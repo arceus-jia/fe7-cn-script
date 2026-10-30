@@ -54,9 +54,10 @@ def main():
             fixes.setdefault(int(i, 16), []).append((r['anchor'], fix, (r['cv'], r['no']), r.get('speaker')))
 
     units, items = unit_data(rom, tbl), item_data(rom, tbl)
-    music = json.load(open(os.path.join(here, 'music.json'), encoding='utf-8'))  # 曲目表，音频外链 Serenes Forest
+    music = json.load(open(os.path.join(here, 'music.json'), encoding='utf-8'))  # 曲目表，音频在 music/
     shutil.rmtree(site, ignore_errors=True)  # docs/ 全部由脚本生成，先清空，免得留下改名前的旧页面
     os.makedirs(site)
+    shutil.copytree(os.path.join(here, 'music'), os.path.join(site, 'music'))
     art = export_art(rom, tbl, faces, pages, units[0], items, site)
     write_site(pages, glossary, units, items, music, site, art=art)  # GitHub Pages：main 分支 /docs
     write_site(pages, glossary, units, items, music, site, jt={'fixes': fixes, 'names': JINTIAN_NAMES}, art=art)
