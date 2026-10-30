@@ -145,7 +145,17 @@ def script(rom, tbl, i, faces, state=None):
                 cur, speaker = to, slots.get(to)
     flush()
     state['cur'] = cur
+    if i in SPEAKER_FIXES:
+        lines = [(SPEAKER_FIXES[i].get(s, sp), s) for sp, s in lines]
     return lines
+
+
+# 原文站位码与实际站位对不上、推断不出的个别段落，按剧情（对照美版剧本）手动指定：文本ID -> {台词: 说话人}
+SPEAKER_FIXES = {
+    0x940: {'！': '塞拉', '你们为什么和山贼们交战？': '琳', '……被逼的。': '埃克', '就是就是。': '塞拉',
+            '我们被误认为和你们一起的了！': '塞拉', '要不是你吵着要来看热闹，我们怎么会被卷进来？': '埃克',
+            '对不起，请不要在意我们。': '埃克'},  # 中间一段用的是实际站位的左右镜像位置
+}
 
 
 DEBUG_FACE_TEXTS = range(0x11A6, 0x11AE)  # 开发用头像查看器：「[09]头像A [0C]头像B / 名A、名B」
@@ -210,7 +220,8 @@ MODE_OPS = (0x0F, 0x12)
 ALT_OPS = (0x1A, 0x1B)
 # 事件流程控制：0x42 标签、0x43 无条件跳转、0x44–0x4E 条件判断（第一个参数都是目标标签）。
 # 分支剧情里，跳到标签处的文本要沿用跳转前的头像，而不是上一条（另一分支）文本的
-LABEL_OP, GOTO_OP, IF_OPS = 0x42, 0x43, range(0x44, 0x4F)
+# 条件指令也可能以「(长度<<16)|指令」的打包格式出现（如 0x1004C），按低 16 位识别
+LABEL_OP, GOTO_OP, IF_OPS = 0x42, 0x43, {*range(0x44, 0x51), 0x55, 0x65}
 # 章节序号分组（同章不同路线合并）与显示章号；章节名取自 ROM
 CHAPTERS = [
     ([0], '序章'), ([1], '第1章'), ([2], '第2章'), ([3], '第3章'), ([4], '第4章'), ([5], '第5章'),
@@ -335,6 +346,81 @@ def reuses_faces(raw):
     return False
 
 
+# 第11章以后的篇章判断：(顺着执行一侧, 跳到标签一侧)
+MODE_IF_OPS = {0x4E: ('【艾利乌德篇】', '【赫克托耳篇】'), 0x55: ('【赫克托耳篇】', '【艾利乌德篇】')}
+# 判断触发事件的角色（参数是角色编号）：打包格式 0x1004C 是「是该角色就跳转」，普通格式 0x4C 是「不是该角色就跳转」
+CHAR_IF_OP = 0x4C
+
+
+def branch_tags(ev, k, names):
+    """事件里的条件分支 -> {事件下标: 标签}。对每个条件判断，分别求「跳转」和「不跳转」各自能走到、
+    而另一边走不到的台词，两边都有台词才算一个分支（游戏中两边只会出现一边）；嵌套分支会有多层标签。"""
+    def target(i, lab):  # 跳转目标：之后最近的同号标签（标签号在不同场景间会重复使用）
+        return next((j for j in range(i + 1, len(ev)) if ev[j][0] == LABEL_OP and ev[j][1][0] == lab), None)
+
+    def reach(start):
+        seen, todo = set(), [start]
+        while todo:
+            i = todo.pop()
+            if i is None or i >= len(ev) or i in seen:
+                continue
+            seen.add(i)
+            op, ids = ev[i]
+            if op == GOTO_OP:
+                todo.append(target(i, ids[0]))
+            else:
+                todo.append(i + 1)
+                if op in IF_OPS:
+                    todo.append(target(i, ids[0]))
+        return {i for i in seen if ev[i][0] in TEXT_OPS}
+
+    tags, n, others, named = {}, 0, {}, set()
+    for i, (op, ids) in enumerate(ev):
+        if op not in IF_OPS:
+            continue
+        a, b = reach(i + 1), reach(target(i, ids[0]))
+        then, other = a - b, b - a
+        if op == CHAR_IF_OP and ids[1] in names:  # 按角色判断：两边都有台词才标
+            mine, rest = (other, then) if ids[2] else (then, other)
+            if mine and rest:
+                for p in mine:
+                    tags.setdefault(p, []).append(f'【{names[ids[1]]}的情况】')
+                named |= mine
+                for p in rest:
+                    others.setdefault(p, []).append(names[ids[1]])
+            continue
+        if not then or not other:
+            continue
+        mode = MODE_IF_OPS.get(op) if k >= 12 else None
+        n += not mode
+        for side, ps in enumerate((then, other)):
+            for p in ps:
+                tags.setdefault(p, []).append(mode[side] if mode else f'【分支{n}·情况{side + 1}】')
+    for p, ns in others.items():  # 按角色判断时，不属于任何具体角色的一侧
+        if p not in named:
+            ns = list(dict.fromkeys(ns))
+            tags.setdefault(p, []).append(f'【{ns[0]}以外的情况】' if len(ns) == 1 else '【以上角色以外的情况】')
+    return {p: ''.join(v) for p, v in tags.items()}
+
+
+def talk_events(rom, k, names):
+    """第 k 章「角色对话」触发的剧情：{文本ID: '【A与B交谈】'}。事件头 +4 是对话表，
+    每条 16 字节 [类型3, 事件号][脚本地址][角色A, 角色B]，脚本里第一条显示文本的指令即对话内容。"""
+    hdr = rom.u32(POINTER_TABLE + 4 * rom.d[CHAPTER_DATA + k * 0x94]) - 0x08000000
+    e, out = rom.u32(hdr + 4) - 0x08000000, {}
+    while rom.u16(e) == 3:
+        ptr, a, b = rom.u32(e + 4) - 0x08000000, rom.d[e + 8], rom.d[e + 9]
+        for x in range(ptr, ptr + 0x40, 4):
+            if rom.u32(x) in TEXT_OPS:
+                first = TEXT_OPS[rom.u32(x)][0]
+                t = rom.u32(x + 4 * (1 + first))
+                if 0x800 <= t < TEXT_COUNT and a in names and b in names:
+                    out.setdefault(t, f'【{names[a]}与{names[b]}交谈】')
+                break
+        e += 16
+    return out
+
+
 def chapter_events(rom, k):
     """第 k 章剧情脚本里按顺序出现的文本与流程控制：[(指令, [文本ID...] 或 [标签号])]。"""
     hdr = lambda c: rom.u32(rom.u32(POINTER_TABLE + 4 * rom.d[CHAPTER_DATA + c * 0x94]) - 0x08000000 + 0x38) - 0x08000000
@@ -347,8 +433,8 @@ def chapter_events(rom, k):
             ids = [rom.u32(a + 4 * (1 + first + j)) for j in range(n)]
             if all(0x800 <= t < TEXT_COUNT for t in ids):
                 out.append((op, ids))
-        elif (op in (LABEL_OP, GOTO_OP) or op in IF_OPS) and rom.u32(a + 4) < 0x100:
-            out.append((op, [rom.u32(a + 4)]))
+        elif op >> 16 <= 1 and ((op & 0xFFFF) in (LABEL_OP, GOTO_OP) or (op & 0xFFFF) in IF_OPS) and rom.u32(a + 4) < 0x100:
+            out.append((op & 0xFFFF, [rom.u32(a + 4), rom.u32(a + 8), op >> 16]))  # [标签, 条件参数, 是否打包格式]
     return out
 
 
@@ -428,7 +514,9 @@ def build_pages(rom, tbl, faces):
         copy = lambda st: {k: v and {'slots': dict(v['slots']), 'cur': v['cur']} for k, v in st.items()}
         for k in ks:
             state, saved, dead = {'A': None, 'B': None, 'alt': None}, {}, False
-            for op, ids in events[k]:
+            btags = branch_tags(events[k], k, names)
+            ttags = talk_events(rom, k, names)
+            for pos, (op, ids) in enumerate(events[k]):
                 if op not in TEXT_OPS:  # 流程控制：记下跳转时的头像状态，跳转后进入标签时恢复
                     if op == LABEL_OP and ids[0] in saved:
                         if dead:  # 只能从跳转进入
@@ -458,7 +546,7 @@ def build_pages(rom, tbl, faces):
                     if op not in MODE_OPS and track == 'A':
                         state['B'] = {'slots': dict(st['slots']), 'cur': st['cur']}
                     if t not in done and lines:
-                        story.append((t, tag, lines))
+                        story.append((t, btags.get(pos, '') + ttags.get(t, '') + tag, lines))
                     done.add(t)
         sections.append(('剧情', story))
         rest = entries(t for k in ks for t in leftovers.get(k, []))
@@ -656,6 +744,9 @@ def write_site(pages, glossary, site, jt=None):
                                 + render(lines, groups) + '</article>')
             if n_fix:
                 body.insert(1, f'<p class="note">本页有 {n_fix} 段文本采用了堇天的修正（黄色底色），点句尾「原文」可对照火花原文。</p>')
+            if any('【分支' in tag for _, items in p['sections'] for _, tag, _ in items):
+                body.insert(1, '<p class="note">标有【分支n·情况1】【分支n·情况2】的段落是条件分支（如某角色是否在场、战斗中是否触发），'
+                               '同一个分支的两种情况，游戏中只会出现其中一种。</p>')
             with open(os.path.join(out_dir, slug(p) + '.html'), 'w', encoding='utf-8') as f:
                 f.write(doc(p['title'], nav, ''.join(body), slug(p) + '.html'))
 
@@ -689,7 +780,9 @@ def write_site(pages, glossary, site, jt=None):
         intro = ('<h1>火焰纹章 烈火之剑 汉化版文本</h1><p class="note">文本出自火花 × 狼组汉化版，仅供查阅参考，版权归原作及汉化组所有。<br>'
                  f'右下角可切换到「{JINTIAN_LABEL}」：采用 {jt_link} 的修正译文替换原版中的错译。<br>')
     body = (intro + T('章号中「艾」指艾利乌德篇、「赫」指赫克托耳篇。').replace('「赫」', f'「{T("赫1")[0]}」')
-            + '每段开头的 #编号 是游戏内文本编号。</p>'
+            + '每段开头的 #编号 是游戏内文本编号。'
+            + T('标有【艾利乌德篇】【赫克托耳篇】的段落只在对应篇章出现；标有【分支】的段落是条件分支，同一分支的几种情况游戏中只会出现一种。')
+            + '</p>'
             '<h2>琳篇</h2>' + toc(chapters[:12]) + '<h2>艾利乌德篇・赫克托耳篇</h2>' + toc(chapters[12:])
             + '<h2>其他</h2><ul class="toc">'
             + ''.join(f'<li><a href="{slug(p)}.html">{esc(T(p["title"]))}</a></li>' for p in pages if not p['name'][:2].isdigit())
