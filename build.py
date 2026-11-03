@@ -10,8 +10,8 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # 用 python3 -I 运行时也能导入同目录模块
-from fe7text import (CHAR_TABLE, CLASS_TABLE, ITEM_TABLE, JINTIAN_NAMES, JINTIAN_TYPOS, TEXT_COUNT, Rom, build_pages,
-                     face_names, fmt, item_data, load_tbl, script, table, text, unit_data, write_txt)
+from fe7text import (CHAPTERS, CHAR_TABLE, CLASS_TABLE, ITEM_TABLE, JINTIAN_NAMES, JINTIAN_TYPOS, ROUTES, TEXT_COUNT, Rom,
+                     build_pages, chapter_enemies, face_names, fmt, item_data, load_tbl, script, table, text, unit_data, write_txt)
 from fe7site import export_art, renamer, write_site
 
 
@@ -55,12 +55,14 @@ def main():
 
     units, items = unit_data(rom, tbl), item_data(rom, tbl)
     music = json.load(open(os.path.join(here, 'music.json'), encoding='utf-8'))  # 曲目表，音频在 music/
+    recruit = json.load(open(os.path.join(here, 'recruit.json'), encoding='utf-8'))  # 入手方式，译自 Serenes Forest
+    enemies = [[(ROUTES.get(k), chapter_enemies(rom, tbl, k)) for k in ks] for ks, _ in CHAPTERS]
     shutil.rmtree(site, ignore_errors=True)  # docs/ 全部由脚本生成，先清空，免得留下改名前的旧页面
     os.makedirs(site)
     shutil.copytree(os.path.join(here, 'music'), os.path.join(site, 'music'))
     art = export_art(rom, tbl, faces, pages, units[0], items, site)
-    write_site(pages, glossary, units, items, music, site, art=art)  # GitHub Pages：main 分支 /docs
-    write_site(pages, glossary, units, items, music, site, jt={'fixes': fixes, 'names': JINTIAN_NAMES}, art=art)
+    write_site(pages, glossary, units, items, music, recruit, enemies, site, art=art)  # GitHub Pages：main 分支 /docs
+    write_site(pages, glossary, units, items, music, recruit, enemies, site, jt={'fixes': fixes, 'names': JINTIAN_NAMES}, art=art)
 
     # 自检：几处人工核对过的原文和数据
     assert '纵横捭阖' in text(rom, tbl, 0x6CD).replace('\n', '')
@@ -77,6 +79,9 @@ def main():
     item = {i['name']: i for i in items}
     assert item['铁剑']['price'] == 460 and item['银剑']['might'] == 13 and item['突刺剑']['rank'] == '艾利乌德专用'
     assert item['幽兰戴尔']['bonus'] == '力量+5' and item['铁弓']['effective'][0] == '飞行' and item['治愈之杖']['range'] == '1～魔力/2'
+    caelin = enemies[19][0][1]  # 艾15章・赫16章：四种模式开场敌军人数、头目、艾篇普通第3～4回合的山贼增援
+    assert [len(g) for g in caelin['main']] == [19, 21, 18, 24] and caelin['main'][0][0]['name'] == '巴乌卡'
+    assert (3, 4, (0,)) in [r[:3] for r in caelin['reinf']]
     print('完成：', out, site)
 
 

@@ -125,6 +125,16 @@ figure.scene img{display:block;width:100%;height:auto;border-radius:4px;image-re
 .tbl{overflow-x:auto;margin:.6em -16px 0;padding:0 16px}
 table{border-collapse:collapse;width:100%;font-size:15px}
 th,td{border-bottom:1px solid var(--line);padding:.35em .5em;text-align:left;vertical-align:top}
+.recruit td:first-child,.recruit td:nth-child(2){white-space:nowrap}
+.recruit td:nth-child(2) a{display:block}
+.recruit td:last-child{min-width:16em}
+@media (max-width:640px){.recruit thead{display:none}.recruit tr{display:grid;grid-template-columns:auto 1fr;border-bottom:1px solid var(--line)}
+  .recruit td{border:0}.recruit td:nth-child(2){white-space:normal}.recruit td:nth-child(2) a{display:inline-block;margin-right:.8em}
+  .recruit td:last-child{grid-column:1/-1;min-width:0;padding-top:0}}
+h3{font-size:1.05em;margin:1.4em 0 .4em}
+h4{font-size:15px;margin:1.2em 0 0}
+.boss{font-size:14px;margin:.6em 0 0}
+.boss b{font-weight:500;color:var(--muted);margin-right:.7em}
 table.stat{width:auto;min-width:100%;font-size:14px;font-variant-numeric:tabular-nums;background:var(--card)}
 @media (min-width:900px){table.stat{min-width:0}}
 .stat th,.stat td{text-align:right;white-space:nowrap;vertical-align:middle;padding:.38em .85em}

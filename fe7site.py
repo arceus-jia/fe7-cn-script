@@ -4,7 +4,7 @@
   index.html                首页：章节目录
   story/c00.html…           各章剧情，story/epilogue.html 结局与后日谈
   support/index.html        支援目录，support/supXX.html 每个角色的支援对话
-  data/                     资料：角色、职业、名词表
+  data/                     资料：角色（含入手方式）、职业、武器与道具、敌军配置、名词表
   other/                    阵亡与撤退台词、系统与说明文本
 """
 import html
@@ -12,9 +12,10 @@ import json
 import os
 import re
 import zlib
+from collections import Counter
 
 import fe7gfx
-from fe7text import CHAR_TABLE, JINTIAN_LABEL, JINTIAN_URL, RANKS, STATS, apply_fixes, table, text
+from fe7text import CHAPTERS, CHAR_TABLE, JINTIAN_LABEL, JINTIAN_URL, RANKS, STATS, apply_fixes, table, text
 
 esc = html.escape
 COVER = 'cg/47'          # 首页封面插画：艾利乌德、赫克托耳、琳
@@ -24,7 +25,7 @@ PATHS = {'支援对话': 'support/index.html', '阵亡与撤退台词': 'other/d
 NAV = (('剧情', 'story', 'index.html'), ('支援', 'support', 'support/index.html'),
        ('资料', 'data', 'data/characters.html'), ('其他', 'other', 'other/death.html'), ('搜索', 'search', 'search.html'))
 TABS = {'data': (('角色', 'data/characters.html'), ('职业', 'data/classes.html'), ('武器与道具', 'data/items.html'),
-                 ('名词表', 'data/names.html')),
+                 ('敌军配置', 'data/enemies.html'), ('名词表', 'data/names.html')),
         'other': (('阵亡与撤退台词', 'other/death.html'), ('系统与说明文本', 'other/misc.html'), ('游戏音乐', 'other/music.html'))}
 ASSET, LINK = '\0', '\1'  # 写页面时的占位前缀：分别换成到 docs/ 根和到本版本根目录的相对路径
 SORT_JS = ('<script>document.querySelectorAll("table.sort").forEach(function(t){t.tHead.querySelectorAll("th").forEach(function(th,i){'
@@ -55,10 +56,11 @@ def page_path(p):
     return f'story/c{p["name"][:2]}.html' if p['name'][:2].isdigit() else PATHS[p['name']]
 
 
-def write_site(pages, glossary, units, items, music, site, jt=None, art=None):
+def write_site(pages, glossary, units, items, music, recruit, enemies, site, jt=None, art=None):
     """生成一套网页。jt=None 为火花原版（site 根目录）；jt={'fixes', 'names'} 为堇天修正版（site/jt/）：
     fixes: {文本ID: [(原文锚点, 修正行, (专栏cv号, 条目号), 说话人)]}，names: {火花译名: 堇天译名}。
-    units / items: fe7text.unit_data / item_data 的结果；music: music.json 的曲目；art: export_art 的结果。"""
+    units / items: fe7text.unit_data / item_data 的结果；music / recruit: music.json / recruit.json；
+    enemies: 与 CHAPTERS 对齐，每章 [(路线名, fe7text.chapter_enemies 的结果)]；art: export_art 的结果。"""
     fixes, T = (jt['fixes'], renamer(jt['names'])) if jt else ({}, lambda s: s)
     art = art or {'face': {}, 'portrait': {}}
     applied = set()  # 网页上实际生效的纠错（专栏cv号, 条目号）
@@ -231,7 +233,8 @@ def write_site(pages, glossary, units, items, music, site, jt=None, art=None):
         if page_path(p).startswith('other/'):
             text_page(p, page_path(p))
 
-    write_data(doc, units, items, glossary, T, who)
+    write_data(doc, units, items, glossary, recruit, T, who)
+    write_enemies(doc, chapters, enemies, T)
     write_home(doc, chapters, epilogue, T, jt, len(applied))
     write_search(doc, found, out_dir)
     write_music(doc, music, T)
@@ -258,7 +261,7 @@ def stat_table(head, rows, heat=0):
     return f'<div class="tbl"><table class="stat sort"><thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>'
 
 
-def write_data(doc, units, items, glossary, T, who):
+def write_data(doc, units, items, glossary, recruit, T, who):
     chars, shown, classes = units
     growth_stats = [s for s in STATS if s not in ('体格', '移动')]
     label = lambda k: esc(T(classes[k]['label']))
@@ -273,11 +276,24 @@ def write_data(doc, units, items, glossary, T, who):
         growth_rows.append((who(c['name']), g + [sum(g)]))
     base_rows = [(who(c['name']) + ('<small>琳篇</small>' if c['lyn'] else ''),
                   [label(c['class']), c['lv']] + [c['base'][s] for s in STATS]) for c in chars]
+    chap = {label: f'{LINK}story/c{i:02d}.html' for i, (_, label) in enumerate(CHAPTERS)}
+    recruit_table = lambda rows: '<div class="tbl"><table class="recruit"><thead><tr><th>角色</th><th>加入章节</th><th>入手方式</th></tr></thead>' + ''.join(
+        f'<tr><td>{who(r["name"])}</td><td>{"".join(f"<a href=\"{chap[c]}\">{esc(T(c))}</a>" for c in r["ch"])}</td>'
+        f'<td>{esc(T(r["how"]))}</td></tr>' for r in rows) + '</table></div>'
+    parts = [('入手方式（琳篇）', recruit_table(recruit['lyn'])),
+             (f'入手方式（艾利乌德篇・{T("赫克托耳")}篇）', recruit_table(recruit['eh'])
+              + ''.join(f'<p class="note">{esc(T(n))}</p>' for n in recruit['notes'])),
+             ('成长率', stat_table(['角色', *growth_stats, '合计'], growth_rows, heat=len(growth_stats))),
+             ('初期能力', stat_table(['角色', '职业', 'Lv', *STATS], base_rows))]
+    nav = '<details id="idx" class="jump" open><summary>索引</summary><p>' + \
+          ''.join(f'<a href="#s{j}">{h}</a>' for j, (h, _) in enumerate(parts)) + '</p></details>'
     doc('data/characters.html', '角色资料',
-        '<h1>角色资料</h1><div class="note"><p>成长率是每次升级时该项能力 +1 的概率（%）。初期能力是角色加入时的数值，已加上职业基础值；'
+        '<h1>角色资料</h1><div class="note"><p>入手方式译自 <a href="' + recruit['source'] + '" target="_blank">Serenes Forest</a> 的招募表，'
+        '加入章节、敌我身份和去交谈的角色已用游戏数据逐条核对。点章节名可以阅读该章剧情。</p>'
+        '<p>成长率是每次升级时该项能力 +1 的概率（%）。初期能力是角色加入时的数值，已加上职业基础值；'
         '魔法职业的「力量」即魔力。点表头可以排序。</p><p>琳、威尔、肯特、塞因、芙罗利娜、鲁斯在琳篇和艾利乌德篇（赫克托耳篇）加入时的等级和能力不同，分开列出。</p></div>'
-        '<h2>成长率</h2>' + stat_table(['角色', *growth_stats, '合计'], growth_rows, heat=len(growth_stats))
-        + '<h2>初期能力</h2>' + stat_table(['角色', '职业', 'Lv', *STATS], base_rows) + SORT_JS, wide=True)
+        + nav + ''.join(f'<h2 id="s{j}">{h}<a class="up" href="#idx">↑ 索引</a></h2>{body}' for j, (h, body) in enumerate(parts))
+        + SORT_JS, wide=True)
 
     # 职业：上限（只列不是统一 60/20 的）、转职加成、基础值、职业成长率
     default_cap = {**{s: 20 for s in STATS}, 'HP': 60, '幸运': 30, '移动': None}
@@ -348,6 +364,75 @@ def write_data(doc, units, items, glossary, T, who):
     doc('data/names.html', '名词表', ''.join(body))
 
 
+MODE_SHORT = ('艾篇普通', '艾篇困难', '赫篇普通', '赫篇困难')
+MODE_GROUPS = {(0, 2): '普通', (1, 3): '困难', (0, 1): '艾利乌德篇', (2, 3): '赫克托耳篇'}
+
+
+def write_enemies(doc, chapters, enemies, T):
+    """敌军配置：每章（分路线的每张地图）开场敌军按模式比较、头目、开场剧情另外出现的敌人、按回合的增援。"""
+    tally = lambda us: '、'.join(f'{c} {n}' for c, n in Counter(u['class'] for u in us if not u['boss']).items())
+    named = lambda us: list(dict.fromkeys(f'{u["name"]}（{u["class"]} Lv{u["lv"]}{"，" + "、".join(u["items"]) if u["items"] else ""}）'
+                                          for u in us if u['boss']))
+    units = lambda us: '、'.join(filter(None, [tally(us), *dict.fromkeys(f'{u["name"]}（{u["class"]}）' for u in us if u['boss'])]))
+    short = [s.replace('赫', T('赫克托耳')[:1]) for s in MODE_SHORT]  # 堇天版「赫篇」跟着译名改
+
+    def body(n, data, label):
+        modes = (0,) if n < 12 else (0, 1) if '（艾利乌德篇' in label else (2, 3) if '（赫克托耳篇' in label else (0, 1, 2, 3)
+        name = lambda ms: '' if n < 12 or ms == modes else T(MODE_GROUPS.get(ms, '')) or '、'.join(short[m] for m in ms)
+        cols = {}  # 开场敌军相同的模式合并成一列
+        for m in modes:
+            cols.setdefault(json.dumps(data['main'][m], ensure_ascii=False), []).append(m)
+        cols = [(tuple(ms), data['main'][ms[0]]) for ms in cols.values()]
+        extra = data['extra']
+        if n < 12:  # 琳篇只有一种模式，开场剧情里载入的就是开场敌军的一部分
+            cols, extra = [(cols[0][0], cols[0][1] + extra)], []
+        empty = tuple(sorted(m for ms, us in cols if not us for m in ms))
+        cols = [(ms, us) for ms, us in cols if us]
+        out = []
+        if cols:
+            classes = list(dict.fromkeys(u['class'] for _, us in cols for u in us))
+            head = ['职业'] + [f'{name(ms) or "数量"}（{len(us)}人）' for ms, us in cols]
+            out.append(stat_table(head, [(esc(T(c)), [sum(u['class'] == c for u in us) or None for _, us in cols]) for c in classes]))
+            bosses = {}  # 头目配置相同的模式合并
+            for ms, us in cols:
+                if named(us):
+                    bosses.setdefault('　'.join(named(us)), []).extend(ms)
+            out += [f'<p class="boss"><b>头目{f"（{name(tuple(sorted(ms)))}）" if name(tuple(sorted(ms))) else ""}</b>{esc(T(b))}</p>'
+                    for b, ms in bosses.items()]
+        if extra:
+            whole = f'（{name(empty) or "这一章"}的开场敌军都在这里）' if empty else ''
+            out.append(f'<p class="boss"><b>开场剧情中出现{whole}</b>{esc(T(units(extra)))}</p>')
+        if not out:
+            out.append('<p class="note">这一章没有敌人。</p>')
+        reinf = {}
+        for start, end, ms, us in data['reinf']:
+            ms = tuple(m for m in ms if m in modes)
+            if ms:
+                reinf.setdefault((start, end, units(us)), set()).update(ms)
+        if reinf:
+            rows = [(f'第{s}回合' if not e or e == s else f'第{s}～{e}回合', [name(tuple(sorted(ms))) or '全部', esc(T(u))])
+                    for (s, e, u), ms in sorted(reinf.items(), key=lambda x: x[0][:2])]
+            if all(r[1][0] == '全部' for r in rows):
+                rows = [(t, v[1:]) for t, v in rows]
+            out.append('<h4>增援</h4>' + stat_table(['回合', *(['模式'] if len(rows[0][1]) > 1 else []), '敌军'], rows))
+        return ''.join(out)
+
+    parts = []
+    for n, (p, routes) in enumerate(zip(chapters, enemies)):
+        label = p['title'].partition('　')[0]
+        html_ = ''.join((f'<h3>{esc(T(r))}</h3>' if r else '') + body(n, data, label) for r, data in routes)
+        parts.append((p, label, html_))
+    nav = '<details id="idx" class="jump"><summary>索引</summary><p>' + \
+          ''.join(f'<a href="#s{j}">{esc(T(label))}</a>' for j, (_, label, _) in enumerate(parts)) + '</p></details>'
+    doc('data/enemies.html', '敌军配置',
+        '<h1>敌军配置</h1><div class="note"><p>每章开场时的敌军按职业统计，困难模式和两篇不同时分列比较。数字是人数，头目另列出等级和持有物品。'
+        '「增援」是按回合出现的敌人，标了范围的在范围内每回合各出现一次；靠踩地点、剧情触发的增援不在表内。</p>'
+        '<p>「开场剧情中出现」是开场剧情里另外加入的敌人，其中一些只在特定篇章或难度出现，也可能只在剧情中登场。'
+        '等级是部队配置里的数值，困难模式额外的能力加成没有计入。</p></div>' + nav
+        + ''.join(f'<h2 id="s{j}"><a href="{LINK}{page_path(p)}">{esc(T(p["title"]))}</a><a class="up" href="#idx">↑ 索引</a></h2>{h}'
+                  for j, (p, _, h) in enumerate(parts)), wide=True)
+
+
 def write_home(doc, chapters, epilogue, T, jt, n_applied):
     def card(p, img):
         label, _, title = p['title'].partition('　')
@@ -370,8 +455,8 @@ def write_home(doc, chapters, epilogue, T, jt, n_applied):
     else:
         intro = (f'文本出自火花 × 狼组汉化版，仅供查阅参考，版权归原作及汉化组所有。右下角可切换到「{JINTIAN_LABEL}」：'
                  f'采用 {jt_link} 的修正译文替换原版中的错译。')
-    quick = (('支援对话', 'support/index.html'), ('角色成长率', 'data/characters.html'), ('职业上限与成长率', 'data/classes.html'),
-             ('武器与道具', 'data/items.html'), ('名词表', 'data/names.html'), ('游戏音乐', 'other/music.html'), ('阵亡与撤退台词', 'other/death.html'), ('结局与后日谈', 'story/epilogue.html'))
+    quick = (('支援对话', 'support/index.html'), ('角色入手方式', 'data/characters.html'), ('角色成长率', 'data/characters.html#s2'), ('职业上限与成长率', 'data/classes.html'),
+             ('武器与道具', 'data/items.html'), ('敌军配置', 'data/enemies.html'), ('名词表', 'data/names.html'), ('游戏音乐', 'other/music.html'), ('阵亡与撤退台词', 'other/death.html'), ('结局与后日谈', 'story/epilogue.html'))
     hector = T('赫克托耳')
     body = (f'<figure class="cover"><img src="{ASSET}img/{COVER}.png" alt="艾利乌德、{hector}与琳">'
             f'<figcaption><h1>火焰纹章 烈火之剑</h1><p>火花 × 狼组汉化版全文本{f"，{JINTIAN_LABEL}" if jt else ""}</p></figcaption></figure>'

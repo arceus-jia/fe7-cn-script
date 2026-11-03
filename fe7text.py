@@ -318,11 +318,12 @@ CHAPTERS = [
     ([20], '艾16章・赫17章'), ([21], '艾16章外传・赫17章外传'), ([22], '艾17章・赫18章'), ([23], '艾18章・赫19章'),
     ([24], '艾18章外传・赫19章外传'), ([25], '赫19章异传（赫克托耳篇限定）'), ([26], '艾19章・赫20章'),
     ([27], '艾20章・赫21章'), ([28], '艾21章・赫22章'), ([29], '艾22章・赫23章'), ([30], '艾22章外传・赫23章外传'),
-    ([31, 32], '艾23章・赫24章'), ([33], '艾24章・赫25章'), ([34], '艾25章・赫26章'), ([35, 36], '艾26章・赫27章'),
-    ([37], '艾27章・赫28章'), ([38], '艾27章外传・赫28章外传'), ([39], '艾28章・赫29章'), ([40], '艾29章・赫30章'),
-    ([41], '赫31章（赫克托耳篇限定）'), ([42], '艾30章・赫32章'), ([43], '艾30章外传・赫32章外传'),
-    ([44], '艾31章・赫33章'), ([45], '艾31章外传・赫33章外传'), ([46, 47], '终章'),
+    ([31, 32], '艾23章・赫24章'), ([33], '赫25章（赫克托耳篇限定）'), ([34], '艾24章・赫26章'), ([35, 36], '艾25章・赫27章'),
+    ([37], '艾26章・赫28章'), ([38], '艾26章外传・赫28章外传'), ([39], '艾27章・赫29章'), ([40], '艾28章（艾利乌德篇限定）'),
+    ([41], '赫30章（赫克托耳篇限定）'), ([42], '艾29章・赫31章'), ([43], '艾29章外传・赫31章外传'),
+    ([44], '艾30章・赫32章'), ([45], '赫32章外传（赫克托耳篇限定）'), ([46, 47], '终章'),
 ]
+ROUTES = {31: '罗依德路线', 32: '莱纳斯路线', 35: '凯尼斯路线', 36: '修尔梅路线', 46: '前半', 47: '后半'}  # 同章分两张地图的
 CHAPTER_TEXTS = range(0x833, 0xF36)  # 剧情文本按章节连续编号（含终章后的收尾剧情）
 # 未被事件引用的文本默认归到编号在它之前的那一章；例外：第4章防卫图的教学与评价排在第4章剧情之前
 CHAPTER_OVERRIDES = {t: 4 for t in range(0x8EA, 0x8FD)}
@@ -494,6 +495,59 @@ def branch_tags(ev, k, names):
             ns = list(dict.fromkeys(ns))
             tags.setdefault(p, []).append(f'【{ns[0]}以外的情况】' if len(ns) == 1 else '【以上角色以外的情况】')
     return {p: ''.join(v) for p, v in tags.items()}
+
+
+UNIT_GROUPS = range(0xD8E000, 0xDB0000)  # 部队配置所在的区域
+# 事件头 +0x18 起是四种模式的开场敌军：艾利乌德篇普通、困难，赫克托耳篇普通、困难（下文「模式下标」即此顺序）；
+# 回合事件 +0xC 的模式条件 -> 适用的模式下标（见 0x08078AD8）
+TURN_MODES = {0: (0, 1, 2, 3), 1: (0,), 2: (2,), 3: (1,), 4: (3,), 5: (1, 3)}
+END_OP = 0x0A  # 事件脚本结束
+
+
+def unit_group(rom, tbl, ptr):
+    """部队配置：每人 16 字节 [人物][职业][队长][等级<<3 | 阵营<<1 | 自动升级][出现坐标][移动到][物品×4][AI×4]，
+    人物为 0 结束。阵营 0 我方、1 友军、2 敌方；有头像（人物表 +6）的算头目。"""
+    d, p, out = rom.d, ptr - 0x08000000, []
+    while p in UNIT_GROUPS and d[p] and d[p + 1]:
+        out.append({'name': text(rom, tbl, rom.u16(CHAR_TABLE + d[p] * 0x34)), 'boss': rom.u16(CHAR_TABLE + d[p] * 0x34 + 6) > 0,
+                    'class': text(rom, tbl, rom.u16(CLASS_TABLE + d[p + 1] * 0x54)), 'lv': d[p + 3] >> 3, 'side': d[p + 3] >> 1 & 3,
+                    'items': [text(rom, tbl, rom.u16(ITEM_TABLE + x * 0x24)) for x in d[p + 8:p + 12] if x]})
+        p += 16
+    return out
+
+
+def chapter_enemies(rom, tbl, k):
+    """第 k 章的敌军：{'main': [四种模式的开场敌军], 'extra': [开场剧情另外载入的敌人（分不出模式）],
+    'reinf': [(起始回合, 结束回合（0 = 只在起始回合）, 适用的模式下标, [敌人])]}。
+    回合事件表（事件头 +0）：类型 2 每条 16 字节 [类型, 事件号][脚本][起始回合, 结束回合, 阶段][模式条件]，类型 1 每条 12 字节；
+    事件号为 0 的回合事件在范围内每回合都触发。脚本里的部队配置指针就是载入的部队（指令 0x30 等）。"""
+    hdr = rom.u32(POINTER_TABLE + 4 * rom.d[CHAPTER_DATA + k * 0x94]) - 0x08000000
+    enemies = lambda ptr: [u for u in unit_group(rom, tbl, ptr) if u['side'] == 2]
+    slots = [rom.u32(hdr + 0x18 + 4 * m) for m in range(4)]
+    turns, t = [], rom.u32(hdr) - 0x08000000
+    while rom.u32(t):
+        if rom.u16(t) == 2:
+            turns.append((rom.u32(t + 4), rom.d[t + 8], rom.d[t + 9], rom.u32(t + 12)))
+        t += 12 if rom.u16(t) == 1 else 16
+    starts = {p for p, *_ in turns} | {rom.u32(hdr + 0x3C)}  # 各段脚本的开头，用来判断一段脚本到哪里结束
+    for off in (4, 8, 0xC):  # 交谈 / 地点 / 其他事件表，脚本指针都在 +4
+        t, size = rom.u32(hdr + off) - 0x08000000, 16 if off == 4 else 12
+        while rom.u32(t):
+            starts.add(rom.u32(t + 4)); t += size
+
+    def loads(ptr, stop_at_end):  # 脚本里载入的敌人部队：[(指针, 敌人)]
+        out, a, end = [], ptr - 0x08000000, min((s for s in starts if s > ptr), default=ptr + 0x1000) - 0x08000000
+        while a < end and not (stop_at_end and rom.u32(a) == END_OP):
+            if enemies(rom.u32(a)):
+                out.append((rom.u32(a), enemies(rom.u32(a))))
+            a += 4
+        return out
+    begin = rom.u32(hdr + 0x38)
+    main = [enemies(p) for p in slots]
+    extra = {p: g for p, g in loads(begin, False) if p not in slots and g not in main}
+    reinf = [(start, end, TURN_MODES[mode], g) for p, start, end, mode in turns
+             if p != begin and mode in TURN_MODES for _, g in loads(p, True)]
+    return {'main': main, 'extra': [u for g in extra.values() for u in g], 'reinf': reinf}
 
 
 def talk_events(rom, k, names):
